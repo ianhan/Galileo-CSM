@@ -4,47 +4,199 @@ Date: Tue, 21 Apr 2026 12:28:46 -0600
 Subject: [PATCH] QuarkPlatformPkg: add SeaBIOS CSM support
 
 ---
- OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c   |  12 +-
- OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h   |  11 --
- OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf |  10 +-
- OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c |  56 +++----
- OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h |  20 +--
- OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.c  | 163 ++++++++++++++++----
- OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h  |   7 +-
- QuarkPlatformPkg/Quark.dsc                  |  39 +++++
- QuarkPlatformPkg/Quark.fdf                  |  17 ++
- 9 files changed, 225 insertions(+), 110 deletions(-)
-
+diff --git a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c
+index dc1f760876..7c1130e2aa 100644
+--- a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c
++++ b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c
+@@ -250,9 +250,9 @@ IsLegacyRom (
+   return EFI_NOT_FOUND;
+ }
+ 
+-/**
+-  Find the PC-AT ROM Image in the raw PCI Option ROM. Also return the
+-  related information from the header.
++/**
++  Find the PC-AT ROM Image in the raw PCI Option ROM. Also return the
++  related information from the header.
+ 
+   @param  Csm16Revision           The PCI interface version of underlying CSM16
+   @param  VendorId                Vendor ID of the PCI device
+@@ -2260,10 +2260,10 @@ LegacyBiosInstallRom (
+   OUT UINT8                             *DiskEnd, OPTIONAL
+   OUT VOID                              **RomShadowAddress OPTIONAL
+   )
+-{
+-  EFI_STATUS            Status;
+-  EFI_STATUS            PciEnableStatus;
+-  EFI_PCI_IO_PROTOCOL   *PciIo;
++{
++  EFI_STATUS            Status;
++  EFI_STATUS            PciEnableStatus;
++  EFI_PCI_IO_PROTOCOL   *PciIo;
+   UINT8                 LocalDiskStart;
+   UINT8                 LocalDiskEnd;
+   UINTN                 Segment;
+@@ -2284,18 +2284,22 @@ LegacyBiosInstallRom (
+   UINTN                 RuntimeAddress;
+   EFI_PHYSICAL_ADDRESS  PhysicalAddress;
+   UINT32                Granularity;
+-
+-  PciIo           = NULL;
+-  LocalDiskStart  = 0;
+-  LocalDiskEnd    = 0;
+-  Segment         = 0;
+-  Bus             = 0;
+-  Device          = 0;
+-  Function        = 0;
+-  VideoMode       = 0;
+-  OldVideoMode    = 0;
+-  PhysicalAddress = 0;
+-  MaxRomAddr      = PcdGet32 (PcdEndOpromShadowAddress);
++  UINT64                Supports;
++  UINT64                EnableAttributes;
++
++  PciIo              = NULL;
++  LocalDiskStart     = 0;
++  LocalDiskEnd       = 0;
++  Segment            = 0;
++  Bus                = 0;
++  Device             = 0;
++  Function           = 0;
++  VideoMode          = 0;
++  OldVideoMode       = 0;
++  PhysicalAddress    = 0;
++  MaxRomAddr         = PcdGet32 (PcdEndOpromShadowAddress);
++  Supports        = 0;
++  EnableAttributes = 0;
+ 
+   if ((Private->Legacy16Table->TableLength >= OFFSET_OF(EFI_COMPATIBILITY16_TABLE, HiPermanentMemoryAddress)) &&
+       (Private->Legacy16Table->UmaAddress != 0) &&
+@@ -2484,25 +2488,58 @@ LegacyBiosInstallRom (
+                     );
+     ASSERT_EFI_ERROR (Status);
+ 
+-    //
+-    // Enable command register.
+-    //
+-    PciEnableStatus = PciIo->Attributes (
+-                               PciIo,
+-                               EfiPciIoAttributeOperationEnable,
+-                               EFI_PCI_DEVICE_ENABLE,
+-                               NULL
+-                               );
+-
+-    PciIo->GetLocation (
+-             PciIo,
+-             &Segment,
+-             &Bus,
+-             &Device,
+-             &Function
+-             );
+-    DEBUG ((EFI_D_INFO, "Shadowing OpROM on the PCI device %x/%x/%x\n", Bus, Device, Function));
+-  }
++    EnableAttributes = EFI_PCI_DEVICE_ENABLE;
++    if (PciHandle == mVgaHandle) {
++      Status = PciIo->Attributes (
++                        PciIo,
++                        EfiPciIoAttributeOperationSupported,
++                        0,
++                        &Supports
++                        );
++      if (!EFI_ERROR (Status)) {
++        if ((Supports & EFI_PCI_IO_ATTRIBUTE_VGA_MEMORY) != 0) {
++          EnableAttributes |= EFI_PCI_IO_ATTRIBUTE_VGA_MEMORY;
++        }
++
++        if ((Supports & EFI_PCI_IO_ATTRIBUTE_VGA_IO) != 0) {
++          EnableAttributes |= EFI_PCI_IO_ATTRIBUTE_VGA_IO;
++        } else if ((Supports & EFI_PCI_IO_ATTRIBUTE_VGA_IO_16) != 0) {
++          EnableAttributes |= EFI_PCI_IO_ATTRIBUTE_VGA_IO_16;
++        }
++
++        DEBUG ((
++          EFI_D_INFO,
++          " VGA OpROM attributes supported=%x enable=%x\n",
++          (UINTN) Supports,
++          (UINTN) EnableAttributes
++          ));
++      } else {
++        DEBUG ((EFI_D_ERROR, " VGA OpROM attributes query failed: %r\n", Status));
++      }
++    }
++
++    //
++    // Enable command register and, for VGA, legacy VGA decode.
++    //
++    PciEnableStatus = PciIo->Attributes (
++                               PciIo,
++                               EfiPciIoAttributeOperationEnable,
++                               EnableAttributes,
++                               NULL
++                               );
++    if (PciHandle == mVgaHandle) {
++      DEBUG ((EFI_D_INFO, " VGA OpROM enable status: %r\n", PciEnableStatus));
++    }
++
++    PciIo->GetLocation (
++             PciIo,
++             &Segment,
++             &Bus,
++             &Device,
++             &Function
++             );
++    DEBUG ((EFI_D_INFO, "Shadowing OpROM on the PCI device %x/%x/%x\n", Bus, Device, Function));
++  }
+ 
+   mIgnoreBbsUpdateFlag  = FALSE;
+   Regs.X.AX             = Legacy16DispatchOprom;
 diff --git a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c
 index 533b078593..b66e22fe6e 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c
 +++ b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c
-@@ -21,11 +21,17 @@ CsmSupportLibConstructor (
-   VOID
-   )
- {
--  LegacyRegionInit ();
-+  EFI_STATUS  Status;
+@@ -15,18 +15,24 @@
+   @retval EFI_SUCCESS   The constructor always returns RETURN_SUCCESS.
  
+ **/
+-RETURN_STATUS
+-EFIAPI
+-CsmSupportLibConstructor (
+-  VOID
+-  )
+-{
+-  LegacyRegionInit ();
+-
 -  LegacyInterruptInstall ();
+-
+-  LegacyBiosPlatformInstall ();
+-
+-  return EFI_SUCCESS;
+-}
++RETURN_STATUS
++EFIAPI
++CsmSupportLibConstructor (
++  VOID
++  )
++{
++  EFI_STATUS  Status;
++
 +  Status = LegacyInterruptInstall ();
 +  if (EFI_ERROR (Status)) {
 +    return Status;
 +  }
- 
--  LegacyBiosPlatformInstall ();
++
 +  Status = LegacyBiosPlatformInstall ();
 +  if (EFI_ERROR (Status)) {
 +    return Status;
 +  }
++
++  return EFI_SUCCESS;
++}
  
-   return EFI_SUCCESS;
- }
 diff --git a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h
 index 922a6aba2c..4c46b6e93e 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h
 +++ b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h
-@@ -12,17 +12,6 @@
+@@ -12,21 +12,10 @@
  
  #include <Uefi.h>
  
@@ -59,48 +211,86 @@ index 922a6aba2c..4c46b6e93e 100644
 -  VOID
 -  );
 -
- /**
-   Initialize Legacy Interrupt support
+-/**
+-  Initialize Legacy Interrupt support
+-
+-  @retval EFI_SUCCESS   Successfully initialized
++/**
++  Initialize Legacy Interrupt support
++
++  @retval EFI_SUCCESS   Successfully initialized
  
+ **/
+ EFI_STATUS
 diff --git a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf
-index 229f2e0b4b..317529760d 100644
+index 229f2e0b4b..25b1b3c804 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf
 +++ b/OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf
-@@ -29,16 +29,11 @@
-   LegacyInterrupt.h
-   LegacyPlatform.c
-   LegacyPlatform.h
+@@ -22,35 +22,27 @@
+ #  VALID_ARCHITECTURES           = IA32 X64 EBC
+ #
+ 
+-[Sources]
+-  CsmSupportLib.c
+-  CsmSupportLib.h
+-  LegacyInterrupt.c
+-  LegacyInterrupt.h
+-  LegacyPlatform.c
+-  LegacyPlatform.h
 -  LegacyRegion.c
 -  LegacyRegion.h
- 
- [Packages]
-   MdePkg/MdePkg.dec
-   IntelFrameworkPkg/IntelFrameworkPkg.dec
+-
+-[Packages]
+-  MdePkg/MdePkg.dec
+-  IntelFrameworkPkg/IntelFrameworkPkg.dec
 -  OvmfPkg/OvmfPkg.dec
 -
 -[Pcd]
 -  gUefiOvmfPkgTokenSpaceGuid.PcdOvmfHostBridgePciDevId
-+  QuarkSocPkg/QuarkSocPkg.dec
- 
- [Protocols]
-   gEfiDevicePathProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
-@@ -46,11 +41,8 @@
-   gEfiLegacyBiosPlatformProtocolGuid            # PROTOCOL ALWAYS_CONSUMED
-   gEfiLegacyBiosProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
-   gEfiLegacyInterruptProtocolGuid               # PROTOCOL ALWAYS_PRODUCED
+-
+-[Protocols]
+-  gEfiDevicePathProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
+-  gEfiDiskInfoProtocolGuid                      # PROTOCOL ALWAYS_CONSUMED
+-  gEfiLegacyBiosPlatformProtocolGuid            # PROTOCOL ALWAYS_CONSUMED
+-  gEfiLegacyBiosProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
+-  gEfiLegacyInterruptProtocolGuid               # PROTOCOL ALWAYS_PRODUCED
 -  gEfiLegacyRegion2ProtocolGuid                 # PROTOCOL ALWAYS_PRODUCED
-   gEfiPciIoProtocolGuid                         # PROTOCOL ALWAYS_CONSUMED
- 
- [LibraryClasses]
-   BaseLib
-   PciLib
+-  gEfiPciIoProtocolGuid                         # PROTOCOL ALWAYS_CONSUMED
+-
+-[LibraryClasses]
+-  BaseLib
+-  PciLib
 -  IoLib
 -
++[Sources]
++  CsmSupportLib.c
++  CsmSupportLib.h
++  LegacyInterrupt.c
++  LegacyInterrupt.h
++  LegacyPlatform.c
++  LegacyPlatform.h
++
++[Packages]
++  MdePkg/MdePkg.dec
++  IntelFrameworkPkg/IntelFrameworkPkg.dec
++  QuarkSocPkg/QuarkSocPkg.dec
++
++[Protocols]
++  gEfiDevicePathProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
++  gEfiDiskInfoProtocolGuid                      # PROTOCOL ALWAYS_CONSUMED
++  gEfiLegacyBiosPlatformProtocolGuid            # PROTOCOL ALWAYS_CONSUMED
++  gEfiLegacyBiosProtocolGuid                    # PROTOCOL ALWAYS_CONSUMED
++  gEfiLegacyInterruptProtocolGuid               # PROTOCOL ALWAYS_PRODUCED
++  gEfiPciIoProtocolGuid                         # PROTOCOL ALWAYS_CONSUMED
++
++[LibraryClasses]
++  BaseLib
++  PciLib
 diff --git a/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c b/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c
 index 2928e26329..1c1cef2485 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c
 +++ b/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c
-@@ -14,11 +14,6 @@
+@@ -14,14 +14,9 @@
  //
  STATIC EFI_HANDLE mLegacyInterruptHandle = NULL;
  
@@ -109,9 +299,15 @@ index 2928e26329..1c1cef2485 100644
 -//
 -STATIC UINT8      mLegacyInterruptDevice;
 -
- //
- // The Legacy Interrupt Protocol instance produced by this driver
- //
+-//
+-// The Legacy Interrupt Protocol instance produced by this driver
+-//
++//
++// The Legacy Interrupt Protocol instance produced by this driver
++//
+ STATIC EFI_LEGACY_INTERRUPT_PROTOCOL mLegacyInterrupt = {
+   GetNumberPirqs,
+   GetLocation,
 @@ -29,7 +24,16 @@ STATIC EFI_LEGACY_INTERRUPT_PROTOCOL mLegacyInterrupt = {
    WritePirq
  };
@@ -130,64 +326,95 @@ index 2928e26329..1c1cef2485 100644
  
  
  /**
-@@ -75,9 +79,9 @@ GetLocation (
+@@ -74,13 +78,13 @@ GetLocation (
+   OUT UINT8                          *Device,
    OUT UINT8                          *Function
    )
- {
+-{
 -  *Bus      = LEGACY_INT_BUS;
 -  *Device   = mLegacyInterruptDevice;
 -  *Function = LEGACY_INT_FUNC;
+-
+-  return EFI_SUCCESS;
+-}
++{
 +  *Bus      = PCI_BUS_NUMBER_QNC;
 +  *Device   = PCI_DEVICE_NUMBER_QNC_LPC;
 +  *Function = PCI_FUNCTION_NUMBER_QNC_LPC;
++
++  return EFI_SUCCESS;
++}
  
-   return EFI_SUCCESS;
- }
-@@ -96,9 +100,9 @@ GetAddress (
+ 
+ /**
+@@ -95,13 +99,13 @@ GetAddress (
+   UINT8  PirqNumber
    )
  {
-   return PCI_LIB_ADDRESS(
+-  return PCI_LIB_ADDRESS(
 -          LEGACY_INT_BUS,
 -          mLegacyInterruptDevice,
 -          LEGACY_INT_FUNC,
+-          PirqReg[PirqNumber]
+-          );
+-}
++  return PCI_LIB_ADDRESS(
 +          PCI_BUS_NUMBER_QNC,
 +          PCI_DEVICE_NUMBER_QNC_LPC,
 +          PCI_FUNCTION_NUMBER_QNC_LPC,
-           PirqReg[PirqNumber]
-           );
- }
-@@ -126,8 +130,7 @@ ReadPirq (
++          PirqReg[PirqNumber]
++          );
++}
+ 
+ /**
+   Read the given PIRQ register
+@@ -126,11 +130,10 @@ ReadPirq (
      return EFI_INVALID_PARAMETER;
    }
  
 -  *PirqData = PciRead8 (GetAddress (PirqNumber));
 -  *PirqData = (UINT8) (*PirqData & 0x7f);
+-
+-  return EFI_SUCCESS;
+-}
 +  *PirqData = (UINT8) (PciRead8 (GetAddress (PirqNumber)) & 0x7f);
++
++  return EFI_SUCCESS;
++}
  
-   return EFI_SUCCESS;
- }
-@@ -156,7 +159,11 @@ WritePirq (
+ 
+ /**
+@@ -156,9 +159,13 @@ WritePirq (
      return EFI_INVALID_PARAMETER;
    }
  
 -  PciWrite8 (GetAddress (PirqNumber), PirqData);
+-  return EFI_SUCCESS;
+-}
 +  PciAndThenOr8 (
 +    GetAddress (PirqNumber),
 +    (UINT8) ~(BIT7 | B_QNC_LPC_PIRQX_ROUT),
 +    (UINT8) (PirqData & B_QNC_LPC_PIRQX_ROUT)
 +    );
-   return EFI_SUCCESS;
- }
++  return EFI_SUCCESS;
++}
  
-@@ -172,7 +179,6 @@ LegacyInterruptInstall (
+ 
+ /**
+@@ -171,36 +178,17 @@ EFI_STATUS
+ LegacyInterruptInstall (
    VOID
    )
- {
+-{
 -  UINT16      HostBridgeDevId;
-   EFI_STATUS  Status;
- 
-   //
-@@ -180,24 +186,6 @@ LegacyInterruptInstall (
+-  EFI_STATUS  Status;
+-
+-  //
++{
++  EFI_STATUS  Status;
++
++  //
+   // Make sure the Legacy Interrupt Protocol is not already installed in the system
    //
    ASSERT_PROTOCOL_ALREADY_INSTALLED(NULL, &gEfiLegacyInterruptProtocolGuid);
  
@@ -209,25 +436,34 @@ index 2928e26329..1c1cef2485 100644
 -      return EFI_UNSUPPORTED;
 -  }
 -
-   //
-   // Make a new handle and install the protocol
-   //
+-  //
+-  // Make a new handle and install the protocol
+-  //
++  //
++  // Make a new handle and install the protocol
++  //
+   Status = gBS->InstallMultipleProtocolInterfaces (
+                   &mLegacyInterruptHandle,
+                   &gEfiLegacyInterruptProtocolGuid,
 diff --git a/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h b/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h
 index 1e37a41a57..e9eb942f9a 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h
 +++ b/OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h
-@@ -14,29 +14,13 @@
+@@ -10,33 +10,17 @@
+ #ifndef _LEGACY_INTERRUPT_H_
+ #define _LEGACY_INTERRUPT_H_
  
- #include <Protocol/LegacyInterrupt.h>
- 
+-#include <PiDxe.h>
+-
+-#include <Protocol/LegacyInterrupt.h>
+-
 -#include <Library/PcdLib.h>
- #include <Library/PciLib.h>
- #include <Library/DebugLib.h>
- #include <Library/UefiBootServicesTableLib.h>
+-#include <Library/PciLib.h>
+-#include <Library/DebugLib.h>
+-#include <Library/UefiBootServicesTableLib.h>
 -#include <OvmfPlatforms.h>
- 
-+#include <QuarkNcSocId.h>
- 
+-
+-
 -#define LEGACY_INT_BUS  0
 -#define LEGACY_INT_DEV_PIIX4  0x01
 -#define LEGACY_INT_DEV_Q35    0x1f
@@ -244,6 +480,16 @@ index 1e37a41a57..e9eb942f9a 100644
 -#define PIRQH           0x6B
 -
 -#define MAX_PIRQ_NUMBER 8
++#include <PiDxe.h>
++
++#include <Protocol/LegacyInterrupt.h>
++
++#include <Library/PciLib.h>
++#include <Library/DebugLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++
++#include <QuarkNcSocId.h>
++
 +#define MAX_PIRQ_NUMBER QNC_NUMBER_PIRQS
  
  /**
@@ -252,55 +498,95 @@ diff --git a/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.c b/OvmfPkg/Csm/CsmSupport
 index a07bb82da7..0105284d78 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.c
 +++ b/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.c
-@@ -48,11 +48,16 @@ EFI_LEGACY_IRQ_PRIORITY_TABLE_ENTRY IrqPriorityTable[MAX_IRQ_PRIORITY_ENTRIES] =
-   {0x00,0}
- };
+@@ -38,52 +38,116 @@ EFI_HANDLE  mVgaHandles[0x20];
+ EFI_HANDLE  mDiskHandles[0x20];
+ EFI_HANDLE  mIsaHandles[0x20];
  
+-EFI_LEGACY_IRQ_PRIORITY_TABLE_ENTRY IrqPriorityTable[MAX_IRQ_PRIORITY_ENTRIES] = {
+-  {0x0B,0},
+-  {0x09,0},
+-  {0x0A,0},
++EFI_LEGACY_IRQ_PRIORITY_TABLE_ENTRY IrqPriorityTable[MAX_IRQ_PRIORITY_ENTRIES] = {
++  {0x0B,0},
++  {0x09,0},
++  {0x0A,0},
+   {0x05,0},
+   {0x07,0},
+   {0x00,0},
+-  {0x00,0}
+-};
+-
+-//
+-// PIRQ Table
+-// - Slot numbering will be used to update the bus number and determine bridge
+-//   to check to get bus number.  The Slot number - 1 is an index into a decode
+-//   table to get the bridge information.
+-//
+-EFI_LEGACY_PIRQ_TABLE PirqTableHead = {
+-  {
+-    EFI_LEGACY_PIRQ_TABLE_SIGNATURE, // UINT32  Signature
+-    0x00,             // UINT8   MinorVersion
+-    0x01,             // UINT8   MajorVersion
+-    0x0000,           // UINT16  TableSize
+-    0x00,             // UINT8   Bus
+-    0x08,             // UINT8   DevFun
+-    0x0000,           // UINT16  PciOnlyIrq
+-    0x8086,           // UINT16  CompatibleVid
+-    0x122e,           // UINT16  CompatibleDid
+-    0x00000000,       // UINT32  Miniport
++  {0x00,0}
++};
++
 +#define QUARK_DEVFN(Device, Function) \
 +  (UINT8) (((Device) << 3) | (Function))
 +
 +#define QUARK_PIRQ_ENTRY(Register) \
 +  { (Register), QUARK_PIRQ_MASK }
 +
- //
--// PIRQ Table
--// - Slot numbering will be used to update the bus number and determine bridge
--//   to check to get bus number.  The Slot number - 1 is an index into a decode
--//   table to get the bridge information.
++//
 +// Quark/Galileo PCI IRQ routing. Device fields are PCI devfns.
 +// Root ports are marked as slots so LegacyBiosDxe can translate devices behind
 +// PCIe bridges back to the root-port PIRQ links.
- //
- EFI_LEGACY_PIRQ_TABLE PirqTableHead = {
-   {
-@@ -61,10 +66,15 @@ EFI_LEGACY_PIRQ_TABLE PirqTableHead = {
-     0x01,             // UINT8   MajorVersion
-     0x0000,           // UINT16  TableSize
-     0x00,             // UINT8   Bus
--    0x08,             // UINT8   DevFun
++//
++EFI_LEGACY_PIRQ_TABLE PirqTableHead = {
++  {
++    EFI_LEGACY_PIRQ_TABLE_SIGNATURE, // UINT32  Signature
++    0x00,             // UINT8   MinorVersion
++    0x01,             // UINT8   MajorVersion
++    0x0000,           // UINT16  TableSize
++    0x00,             // UINT8   Bus
 +    QUARK_DEVFN (
 +      PCI_DEVICE_NUMBER_QNC_LPC,
 +      PCI_FUNCTION_NUMBER_QNC_LPC
 +      ),
 +                      // UINT8   DevFun
-     0x0000,           // UINT16  PciOnlyIrq
-     0x8086,           // UINT16  CompatibleVid
--    0x122e,           // UINT16  CompatibleDid
++    0x0000,           // UINT16  PciOnlyIrq
++    0x8086,           // UINT16  CompatibleVid
 +    QUARK_V_LPC_DEVICE_ID_0,
 +                      // UINT16  CompatibleDid
-     0x00000000,       // UINT32  Miniport
++    0x00000000,       // UINT32  Miniport
      {                 // UINT8   Reserved[11]
        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-@@ -76,12 +86,66 @@ EFI_LEGACY_PIRQ_TABLE PirqTableHead = {
-     //           -- Pin 1 --   -- Pin 2 --   -- Pin 3 --   -- Pin 4 --
-     // Bus  Dev   Reg   Map     Reg   Map     Reg   Map     Reg   Map
-     //
+       0x00, 0x00, 0x00
+     },
+     0x00,             // UINT8   Checksum
+   },
+-  {
+-    //           -- Pin 1 --   -- Pin 2 --   -- Pin 3 --   -- Pin 4 --
+-    // Bus  Dev   Reg   Map     Reg   Map     Reg   Map     Reg   Map
+-    //
 -    {0x00,0x08,{{0x60,0xDEB8},{0x61,0xDEB8},{0x62,0xDEB8},{0x63,0xDEB8}},0x00,0x00},
 -    {0x00,0x10,{{0x61,0xDEB8},{0x62,0xDEB8},{0x63,0xDEB8},{0x60,0xDEB8}},0x01,0x00},
 -    {0x00,0x18,{{0x62,0xDEB8},{0x63,0xDEB8},{0x60,0xDEB8},{0x61,0xDEB8}},0x02,0x00},
 -    {0x00,0x20,{{0x63,0xDEB8},{0x60,0xDEB8},{0x61,0xDEB8},{0x62,0xDEB8}},0x03,0x00},
 -    {0x00,0x28,{{0x60,0xDEB8},{0x61,0xDEB8},{0x62,0xDEB8},{0x63,0xDEB8}},0x04,0x00},
 -    {0x00,0x30,{{0x61,0xDEB8},{0x62,0xDEB8},{0x63,0xDEB8},{0x60,0xDEB8}},0x05,0x00},
+-  }
+-};
++  {
++    //           -- Pin 1 --   -- Pin 2 --   -- Pin 3 --   -- Pin 4 --
++    // Bus  Dev   Reg   Map     Reg   Map     Reg   Map     Reg   Map
++    //
 +    {
 +      PCI_BUS_NUMBER_QNC,
 +      QUARK_DEVFN (PCI_DEVICE_NUMBER_QNC_IOSF2AHB_0, PCI_FUNCTION_NUMBER_QNC_IOSF2AHB),
@@ -361,19 +647,27 @@ index a07bb82da7..0105284d78 100644
 +      0x00,
 +      0x00
 +    },
-   }
- };
++  }
++};
  
-@@ -235,8 +299,6 @@ GetSelectedVgaDeviceInfo (
+ LEGACY_BIOS_PLATFORM_INSTANCE       mPrivateData;
+ EFI_HANDLE                          mImageHandle = NULL;
+@@ -235,11 +299,9 @@ GetSelectedVgaDeviceInfo (
    UINTN                     Index;
    EFI_PCI_IO_PROTOCOL       *PciIo;
    PCI_TYPE00                Pci;
 -  UINT8                     MinBus;
 -  UINT8                     MaxBus;
-   UINTN                     Segment;
-   UINTN                     Bus;
-   UINTN                     Device;
-@@ -257,11 +319,6 @@ GetSelectedVgaDeviceInfo (
+-  UINTN                     Segment;
+-  UINTN                     Bus;
+-  UINTN                     Device;
++  UINTN                     Segment;
++  UINTN                     Bus;
++  UINTN                     Device;
+   UINTN                     Function;
+   UINTN                     SelectedAddress;
+   UINTN                     CurrentAddress;
+@@ -257,14 +319,9 @@ GetSelectedVgaDeviceInfo (
    HandleBuffer = NULL;
    SelectedAddress = PCI_LIB_ADDRESS(0xff, 0x1f, 0x7, 0);
  
@@ -382,26 +676,48 @@ index a07bb82da7..0105284d78 100644
 -  //
 -  MinBus = MaxBus = 0;
 -
-   //
-   // Start to check all the pci io to find all possible VGA device
-   //
-@@ -282,10 +339,10 @@ GetSelectedVgaDeviceInfo (
+-  //
+-  // Start to check all the pci io to find all possible VGA device
+-  //
++  //
++  // Start to check all the pci io to find all possible VGA device
++  //
+   HandleCount = 0;
+   HandleBuffer = NULL;
+   Status = gBS->LocateHandleBuffer (
+@@ -281,13 +338,13 @@ GetSelectedVgaDeviceInfo (
+   for (Index = 0; Index < HandleCount; Index++) {
      Status = gBS->HandleProtocol (HandleBuffer[Index], &gEfiPciIoProtocolGuid, (VOID**)&PciIo);
      if (!EFI_ERROR (Status)) {
-       //
+-      //
 -      // Detemine if this is in the correct bus range.
-+      // Determine if this is a reachable PCI device.
-       //
-       Status = PciIo->GetLocation (PciIo, &Segment, &Bus, &Device, &Function);
+-      //
+-      Status = PciIo->GetLocation (PciIo, &Segment, &Bus, &Device, &Function);
 -      if (EFI_ERROR(Status) || (Bus < MinBus || Bus > MaxBus)) {
+-        continue;
+-      }
++      //
++      // Determine if this is a reachable PCI device.
++      //
++      Status = PciIo->GetLocation (PciIo, &Segment, &Bus, &Device, &Function);
 +      if (EFI_ERROR(Status)) {
-         continue;
-       }
++        continue;
++      }
  
-@@ -811,6 +868,20 @@ GetPlatformInfo (
-   };
- }
- 
+       //
+       // Read device information.
+@@ -808,11 +865,25 @@ GetPlatformInfo (
+     case EfiGetPlatformPciExpressBase:
+     default:
+       return EFI_UNSUPPORTED;
+-  };
+-}
+-
+-/**
+-  Translates the given PIRQ accounting for bridge.
++  };
++}
++
 +STATIC
 +UINT8
 +PirqRegisterToIndex (
@@ -416,28 +732,45 @@ index a07bb82da7..0105284d78 100644
 +  return MAX_UINT8;
 +}
 +
- /**
-   Translates the given PIRQ accounting for bridge.
++/**
++  Translates the given PIRQ accounting for bridge.
    This function translates the given PIRQ back through all buses, if required,
-@@ -841,10 +912,14 @@ TranslatePirq (
-   EFI_LEGACY_INTERRUPT_PROTOCOL      *LegacyInterrupt;
-   EFI_STATUS                         Status;
-   UINTN                              Index;
+   and returns the true PIRQ and associated IRQ.
+ 
+@@ -837,34 +908,63 @@ TranslatePirq (
+   IN  OUT   UINT8                                       *Pirq,
+       OUT   UINT8                                       *PciIrq
+   )
+-{
+-  EFI_LEGACY_INTERRUPT_PROTOCOL      *LegacyInterrupt;
+-  EFI_STATUS                         Status;
+-  UINTN                              Index;
+-  UINTN                              Index1;
+-  UINT8                              LocalPirq;
+-  UINT8                              PirqData;
+-  UINT8                              MatchData;
+-
+-  Status = gBS->LocateProtocol (
+-                  &gEfiLegacyInterruptProtocolGuid,
++{
++  EFI_LEGACY_INTERRUPT_PROTOCOL      *LegacyInterrupt;
++  EFI_STATUS                         Status;
++  UINTN                              Index;
 +  UINTN                              ExactPass;
-   UINTN                              Index1;
-   UINT8                              LocalPirq;
++  UINTN                              Index1;
++  UINT8                              LocalPirq;
 +  UINT8                              PirqRegister;
-   UINT8                              PirqData;
-   UINT8                              MatchData;
++  UINT8                              PirqData;
++  UINT8                              MatchData;
 +  UINT8                              DevFun;
 +  EFI_LEGACY_PIRQ_ENTRY              *PirqEntry;
- 
-   Status = gBS->LocateProtocol (
-                   &gEfiLegacyInterruptProtocolGuid,
-@@ -852,14 +927,39 @@ TranslatePirq (
-                   (VOID**)&LegacyInterrupt
-                   );
-   ASSERT_EFI_ERROR (Status);
++
++  Status = gBS->LocateProtocol (
++                  &gEfiLegacyInterruptProtocolGuid,
+                   NULL,
+-                  (VOID**)&LegacyInterrupt
+-                  );
+-  ASSERT_EFI_ERROR (Status);
 -  LocalPirq = (UINT8) (*Pirq);
 -
 -  for (Index = 0; Index < MAX_IRQ_ROUTING_ENTRIES; Index++) {
@@ -446,6 +779,14 @@ index a07bb82da7..0105284d78 100644
 -      LocalPirq = (UINT8) (PirqTableHead.IrqRoutingEntry[Index].PirqEntry[LocalPirq].Pirq & 0x0f);
 -      if (LocalPirq > 4) {
 -        LocalPirq -= 4;
+-      }
+-
+-      LegacyInterrupt->ReadPirq (LegacyInterrupt, LocalPirq, &PirqData);
+-      MatchData = PCI_UNUSED;
+-      while (PirqData == 0) {
++                  (VOID**)&LegacyInterrupt
++                  );
++  ASSERT_EFI_ERROR (Status);
 +
 +  if (*Pirq >= 4) {
 +    return EFI_INVALID_PARAMETER;
@@ -479,82 +820,155 @@ index a07bb82da7..0105284d78 100644
 +      LocalPirq = PirqRegisterToIndex (PirqRegister);
 +      if (LocalPirq == MAX_UINT8) {
 +        return EFI_NOT_FOUND;
-       }
- 
-       LegacyInterrupt->ReadPirq (LegacyInterrupt, LocalPirq, &PirqData);
-@@ -882,7 +982,7 @@ TranslatePirq (
-         if (PirqData == 0) {
- 
-           //
--          // No unused interrpts, so start reusing them.
-+          // No unused interrupts, so start reusing them.
-           //
-           MatchData = (UINT8) (~MatchData);
++      }
++
++      LegacyInterrupt->ReadPirq (LegacyInterrupt, LocalPirq, &PirqData);
++      MatchData = PCI_UNUSED;
++      while (PirqData == 0) {
+         for (Index1 = 0; Index1 < MAX_IRQ_PRIORITY_ENTRIES; Index1++) {
+           if ((IrqPriorityTable[Index1].Used == MatchData) &&
+               (IrqPriorityTable[Index1].Irq != 0)) {
+@@ -878,23 +978,24 @@ TranslatePirq (
+             break;
+           }
          }
-@@ -890,10 +990,11 @@ TranslatePirq (
- 
-       *PciIrq = PirqData;
-       *Pirq   = LocalPirq;
-+      return EFI_SUCCESS;
-     }
-   }
- 
+-
+-        if (PirqData == 0) {
+-
+-          //
+-          // No unused interrpts, so start reusing them.
+-          //
+-          MatchData = (UINT8) (~MatchData);
+-        }
++
++        if (PirqData == 0) {
++
++          //
++          // No unused interrupts, so start reusing them.
++          //
++          MatchData = (UINT8) (~MatchData);
++        }
+       }
+-
+-      *PciIrq = PirqData;
+-      *Pirq   = LocalPirq;
+-    }
+-  }
+-
 -  return EFI_SUCCESS;
+-}
++
++      *PciIrq = PirqData;
++      *Pirq   = LocalPirq;
++      return EFI_SUCCESS;
++    }
++  }
++
 +  return EFI_NOT_FOUND;
- }
++}
  
  
+ /**
 diff --git a/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h b/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h
 index 1479efc749..497ae24674 100644
 --- a/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h
 +++ b/OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h
-@@ -16,7 +16,6 @@
- #include <Protocol/PciRootBridgeIo.h>
- #include <Protocol/DevicePath.h>
- #include <Protocol/LegacyInterrupt.h>
+@@ -12,37 +12,36 @@
+ 
+ #include <FrameworkDxe.h>
+ 
+-#include <Protocol/PciIo.h>
+-#include <Protocol/PciRootBridgeIo.h>
+-#include <Protocol/DevicePath.h>
+-#include <Protocol/LegacyInterrupt.h>
 -#include <Protocol/LegacyRegion2.h>
- #include <Protocol/LegacyBiosPlatform.h>
- #include <Protocol/FirmwareVolume.h>
- #include <Protocol/DiskInfo.h>
-@@ -27,19 +26,19 @@
+-#include <Protocol/LegacyBiosPlatform.h>
+-#include <Protocol/FirmwareVolume.h>
+-#include <Protocol/DiskInfo.h>
++#include <Protocol/PciIo.h>
++#include <Protocol/PciRootBridgeIo.h>
++#include <Protocol/DevicePath.h>
++#include <Protocol/LegacyInterrupt.h>
++#include <Protocol/LegacyBiosPlatform.h>
++#include <Protocol/FirmwareVolume.h>
++#include <Protocol/DiskInfo.h>
+ 
+ #include <Library/UefiDriverEntryPoint.h>
+ #include <Library/UefiBootServicesTableLib.h>
+ #include <Library/UefiRuntimeServicesTableLib.h>
  #include <Library/DebugLib.h>
- #include <Library/BaseMemoryLib.h>
- #include <Library/MemoryAllocationLib.h>
+-#include <Library/BaseMemoryLib.h>
+-#include <Library/MemoryAllocationLib.h>
 -#include <Library/IoLib.h>
- #include <Library/PciLib.h>
+-#include <Library/PciLib.h>
 -#include <Library/PcdLib.h>
- #include <Library/DxeServicesLib.h>
- #include <Library/DevicePathLib.h>
- 
- #include <IndustryStandard/Pci.h>
-+#include <QuarkNcSocId.h>
- 
- //
- // PIRQ information constants.
- //
+-#include <Library/DxeServicesLib.h>
+-#include <Library/DevicePathLib.h>
+-
+-#include <IndustryStandard/Pci.h>
+-
+-//
+-// PIRQ information constants.
+-//
 -#define MAX_IRQ_ROUTING_ENTRIES     6
+-#define MAX_IRQ_PRIORITY_ENTRIES    7
+-
+-#define V_INTEL_VENDOR_ID         0x8086
+-#define V_PIIX4_IDE_DEVICE_ID     0x7010
++#include <Library/BaseMemoryLib.h>
++#include <Library/MemoryAllocationLib.h>
++#include <Library/PciLib.h>
++#include <Library/DxeServicesLib.h>
++#include <Library/DevicePathLib.h>
++
++#include <IndustryStandard/Pci.h>
++#include <QuarkNcSocId.h>
++
++//
++// PIRQ information constants.
++//
 +#define MAX_IRQ_ROUTING_ENTRIES     5
- #define MAX_IRQ_PRIORITY_ENTRIES    7
++#define MAX_IRQ_PRIORITY_ENTRIES    7
 +#define QUARK_PIRQ_MASK             0xDEB8
++
++#define V_INTEL_VENDOR_ID         0x8086
++#define V_PIIX4_IDE_DEVICE_ID     0x7010
  
- #define V_INTEL_VENDOR_ID         0x8086
- #define V_PIIX4_IDE_DEVICE_ID     0x7010
+ //
+ // Type declarations
 diff --git a/QuarkPlatformPkg/Quark.dsc b/QuarkPlatformPkg/Quark.dsc
-index b0a98ec77d..0d335847b8 100644
+index e5ebeb5e09..0d335847b8 100644
 --- a/QuarkPlatformPkg/Quark.dsc
 +++ b/QuarkPlatformPkg/Quark.dsc
-@@ -35,6 +35,7 @@
-   DEFINE LOGGING              = FALSE
-   DEFINE CAPSULE_ENABLE       = FALSE
-   DEFINE RECOVERY_ENABLE      = FALSE
+@@ -31,10 +31,11 @@
+   DEFINE SECURE_BOOT_ENABLE   = FALSE
+   DEFINE MEASURED_BOOT_ENABLE = FALSE
+   DEFINE SOURCE_DEBUG_ENABLE  = FALSE
+-  DEFINE PERFORMANCE_ENABLE   = FALSE
+-  DEFINE LOGGING              = FALSE
+-  DEFINE CAPSULE_ENABLE       = FALSE
+-  DEFINE RECOVERY_ENABLE      = FALSE
++  DEFINE PERFORMANCE_ENABLE   = FALSE
++  DEFINE LOGGING              = FALSE
++  DEFINE CAPSULE_ENABLE       = FALSE
++  DEFINE RECOVERY_ENABLE      = FALSE
 +  DEFINE CSM_ENABLE           = TRUE
  
    #
    # Galileo board.  Options are [GEN1, GEN2]
-@@ -439,6 +440,21 @@
-   gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPortBaseAddress        |0x1000
-   gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiPm1TmrOffset             |0x0008
- 
+@@ -435,11 +436,26 @@
+   gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPciFunctionNumber      |0
+   gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPciEnableRegisterOffset|0x4b
+   gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoBarEnableMask          |0x80
+-  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPciBarRegisterOffset   |0x48
+-  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPortBaseAddress        |0x1000
+-  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiPm1TmrOffset             |0x0008
+-
+-  gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
++  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPciBarRegisterOffset   |0x48
++  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiIoPortBaseAddress        |0x1000
++  gPcAtChipsetPkgTokenSpaceGuid.PcdAcpiPm1TmrOffset             |0x0008
++
 +!if $(CSM_ENABLE)
 +  gPcAtChipsetPkgTokenSpaceGuid.Pcd8259LegacyModeMask|0xFFFF
 +  gPcAtChipsetPkgTokenSpaceGuid.Pcd8259LegacyModeEdgeLevel|0x0E20
@@ -570,55 +984,99 @@ index b0a98ec77d..0d335847b8 100644
 +  gEfiIntelFrameworkModulePkgTokenSpaceGuid.PcdHighPmmMemorySize|0x400000
 +!endif
 +
-   gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
++  gEfiMdeModulePkgTokenSpaceGuid.PcdBootManagerMenuFile|{ 0x21, 0xaa, 0x2c, 0x46, 0x14, 0x76, 0x03, 0x45, 0x83, 0x6e, 0x8a, 0xb6, 0xf4, 0x66, 0x23, 0x31 }
  
    gEfiMdeModulePkgTokenSpaceGuid.PcdConInConnectOnDemand|FALSE
-@@ -455,6 +471,10 @@
- [PcdsPatchableInModule]
-   gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x803000C7
-   gEfiMdeModulePkgTokenSpaceGuid.PcdVpdBaseAddress|0x0
+ 
+@@ -452,11 +468,15 @@
+   #
+   gEfiMdePkgTokenSpaceGuid.PcdSpeculationBarrierType|0x02
+ 
+-[PcdsPatchableInModule]
+-  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x803000C7
+-  gEfiMdeModulePkgTokenSpaceGuid.PcdVpdBaseAddress|0x0
+-
+-[PcdsDynamicExHii.common.DEFAULT]
++[PcdsPatchableInModule]
++  gEfiMdePkgTokenSpaceGuid.PcdDebugPrintErrorLevel|0x803000C7
++  gEfiMdeModulePkgTokenSpaceGuid.PcdVpdBaseAddress|0x0
 +!if $(CSM_ENABLE)
 +  gEfiMdeModulePkgTokenSpaceGuid.PcdVideoHorizontalResolution|800
 +  gEfiMdeModulePkgTokenSpaceGuid.PcdVideoVerticalResolution|600
 +!endif
- 
- [PcdsDynamicExHii.common.DEFAULT]
++
++[PcdsDynamicExHii.common.DEFAULT]
  !if $(PERFORMANCE_ENABLE)
-@@ -708,6 +728,10 @@
-   MdeModulePkg/Universal/BdsDxe/BdsDxe.inf {
-     <LibraryClasses>
-       PlatformBootManagerLib|QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
+   gEfiMdePkgTokenSpaceGuid.PcdPlatformBootTimeOut|L"Timeout"|gEfiGlobalVariableGuid|0x0|0
+ !else
+@@ -705,27 +725,38 @@
+   #
+   # Platform
+   #
+-  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf {
+-    <LibraryClasses>
+-      PlatformBootManagerLib|QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
+-!if $(CAPSULE_ENABLE)
+-      FmpAuthenticationLib|SecurityPkg/Library/FmpAuthenticationLibPkcs7/FmpAuthenticationLibPkcs7.inf
+-!else
++  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf {
++    <LibraryClasses>
++      PlatformBootManagerLib|QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManagerLib.inf
 +!if $(CSM_ENABLE)
 +      NULL|OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf
 +      NULL|IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBootManagerLib.inf
 +!endif
- !if $(CAPSULE_ENABLE)
-       FmpAuthenticationLib|SecurityPkg/Library/FmpAuthenticationLibPkcs7/FmpAuthenticationLibPkcs7.inf
- !else
-@@ -719,12 +743,19 @@
-       NULL|MdeModulePkg/Library/DeviceManagerUiLib/DeviceManagerUiLib.inf
-       NULL|MdeModulePkg/Library/BootManagerUiLib/BootManagerUiLib.inf
-       NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
++!if $(CAPSULE_ENABLE)
++      FmpAuthenticationLib|SecurityPkg/Library/FmpAuthenticationLibPkcs7/FmpAuthenticationLibPkcs7.inf
++!else
+       FmpAuthenticationLib|MdeModulePkg/Library/FmpAuthenticationLibNull/FmpAuthenticationLibNull.inf
+ !endif
+   }
+   MdeModulePkg/Application/UiApp/UiApp.inf {
+     <LibraryClasses>
+-      NULL|MdeModulePkg/Library/DeviceManagerUiLib/DeviceManagerUiLib.inf
+-      NULL|MdeModulePkg/Library/BootManagerUiLib/BootManagerUiLib.inf
+-      NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
+-
+-      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+-  }
+-
+-  QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
+-  PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
+-  QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
++      NULL|MdeModulePkg/Library/DeviceManagerUiLib/DeviceManagerUiLib.inf
++      NULL|MdeModulePkg/Library/BootManagerUiLib/BootManagerUiLib.inf
++      NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
 +!if $(CSM_ENABLE)
 +      NULL|IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBootManagerLib.inf
 +      NULL|IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUiLib.inf
 +!endif
- 
-       PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
-   }
- 
-   QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
-   PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
++
++      PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
++  }
++
++  QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
++  PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
 +!if $(CSM_ENABLE)
 +  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
 +!endif
-   QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
++  QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
    QuarkPlatformPkg/Platform/Dxe/Setup/DxePlatform.inf
    QuarkSocPkg/QuarkNorthCluster/Spi/PchSpiRuntime.inf {
-@@ -823,6 +854,14 @@
-   MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
-   QuarkSocPkg/QuarkSouthCluster/IohInit/Dxe/IohInitDxe.inf
-   MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+     <LibraryClasses>
+@@ -820,12 +851,20 @@
+   # PCI
+   #
+   QuarkPlatformPkg/Pci/Dxe/PciPlatform/PciPlatform.inf
+-  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
+-  QuarkSocPkg/QuarkSouthCluster/IohInit/Dxe/IohInitDxe.inf
+-  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+-
+-  #
+-  # USB
++  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
++  QuarkSocPkg/QuarkSouthCluster/IohInit/Dxe/IohInitDxe.inf
++  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
 +!if $(CSM_ENABLE)
 +  IntelFrameworkModulePkg/Csm/BiosThunk/VideoDxe/VideoDxe.inf {
 +    <LibraryClasses>
@@ -627,27 +1085,65 @@ index b0a98ec77d..0d335847b8 100644
 +  IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBiosDxe.inf
 +  OvmfPkg/Csm/Csm16/Csm16.inf
 +!endif
- 
++
++  #
++  # USB
    #
-   # USB
+   MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
+   QuarkSocPkg/QuarkSouthCluster/Usb/Ohci/Dxe/OhciDxe.inf
+@@ -936,11 +975,14 @@
+     <LibraryClasses>
+       PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
+   }
+-!endif
+-
+-[BuildOptions.common.EDKII.DXE_RUNTIME_DRIVER]
+-  MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
+-
++!endif
++
++[BuildOptions]
++  GCC:*_*_IA32_CC_FLAGS = -Wno-error
++
++[BuildOptions.common.EDKII.DXE_RUNTIME_DRIVER]
++  MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
++
+ # Force PE/COFF sections to be aligned at 4KB boundaries to support page level protection of DXE_SMM_DRIVER/SMM_CORE modules
+ [BuildOptions.common.EDKII.DXE_SMM_DRIVER, BuildOptions.common.EDKII.SMM_CORE]
+   MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
 diff --git a/QuarkPlatformPkg/Quark.fdf b/QuarkPlatformPkg/Quark.fdf
 index a48a3d41f2..99bbd4fb90 100644
 --- a/QuarkPlatformPkg/Quark.fdf
 +++ b/QuarkPlatformPkg/Quark.fdf
-@@ -481,6 +481,9 @@ INF  QuarkPlatformPkg/Platform/SpiFvbServices/PlatformSpi.inf
+@@ -479,9 +479,12 @@ INF  MdeModulePkg/Application/UiApp/UiApp.inf
+ INF  QuarkPlatformPkg/Pci/Dxe/PciHostBridge/PciHostBridge.inf
+ INF  QuarkPlatformPkg/Platform/SpiFvbServices/PlatformSpi.inf
  INF  QuarkPlatformPkg/Platform/SpiFvbServices/PlatformSmmSpi.inf
- INF  QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
- INF  PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
+-INF  QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
+-INF  PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
+-INF  QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
++INF  QuarkSocPkg/QuarkNorthCluster/QNCInit/Dxe/QNCInitDxe.inf
++INF  PcAtChipsetPkg/HpetTimerDxe/HpetTimerDxe.inf
 +!if $(CSM_ENABLE)
 +INF  PcAtChipsetPkg/8259InterruptControllerDxe/8259.inf
 +!endif
- INF  QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
++INF  QuarkSocPkg/QuarkNorthCluster/Smm/Dxe/SmmAccessDxe/SmmAccess.inf
  INF  QuarkSocPkg/QuarkNorthCluster/S3Support/Dxe/QncS3Support.inf
  INF  QuarkSocPkg/QuarkNorthCluster/Spi/PchSpiRuntime.inf
-@@ -531,6 +534,15 @@ INF  QuarkSocPkg/QuarkSouthCluster/IohInit/Dxe/IohInitDxe.inf
- INF  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
- !endif
- 
+ INF  QuarkSocPkg/QuarkNorthCluster/Spi/PchSpiSmm.inf
+@@ -528,12 +531,21 @@ INF  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
+ INF  QuarkSocPkg/QuarkSouthCluster/IohInit/Dxe/IohInitDxe.inf
+ !if $(SOURCE_DEBUG_ENABLE)
+ !else
+-INF  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
+-!endif
+-
+-#
+-# USB
+-#
++INF  MdeModulePkg/Bus/Pci/PciSioSerialDxe/PciSioSerialDxe.inf
++!endif
++
 +!if $(CSM_ENABLE)
 +#
 +# CSM
@@ -657,21 +1153,39 @@ index a48a3d41f2..99bbd4fb90 100644
 +INF  RuleOverride = CSM OvmfPkg/Csm/Csm16/Csm16.inf
 +!endif
 +
- #
- # USB
- #
-@@ -896,6 +908,11 @@ FMP_PAYLOAD = FmpPayloadSystemFirmwareRsa2048
-     RAW ASL                |.aml
++#
++# USB
++#
+ !if $(PERFORMANCE_ENABLE)
+ !else
+ INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
+@@ -890,15 +902,20 @@ FMP_PAYLOAD = FmpPayloadSystemFirmwareRsa2048
+     VERSION   STRING="$(INF_VERSION)" Optional BUILD_NUM=$(BUILD_NUMBER)
    }
  
+-[Rule.Common.USER_DEFINED.ACPITABLE]
+-  FILE FREEFORM = $(NAMED_GUID) {
+-    RAW ACPI               |.acpi
+-    RAW ASL                |.aml
+-  }
+-
+-[Rule.Common.PEIM.FMP_IMAGE_DESC]
+-  FILE PEIM = $(NAMED_GUID) {
+-     RAW BIN                  |.acpi
++[Rule.Common.USER_DEFINED.ACPITABLE]
++  FILE FREEFORM = $(NAMED_GUID) {
++    RAW ACPI               |.acpi
++    RAW ASL                |.aml
++  }
++
 +[Rule.Common.USER_DEFINED.CSM]
 +  FILE FREEFORM = $(NAMED_GUID) {
 +    RAW BIN                |.bin
 +  }
 +
- [Rule.Common.PEIM.FMP_IMAGE_DESC]
-   FILE PEIM = $(NAMED_GUID) {
-      RAW BIN                  |.acpi
--- 
-2.43.0
-
++[Rule.Common.PEIM.FMP_IMAGE_DESC]
++  FILE PEIM = $(NAMED_GUID) {
++     RAW BIN                  |.acpi
+      PEI_DEPEX PEI_DEPEX Optional        $(INF_OUTPUT)/$(MODULE_NAME).depex
+      PE32      PE32    Align=4K          $(INF_OUTPUT)/$(MODULE_NAME).efi
+      UI       STRING="$(MODULE_NAME)" Optional

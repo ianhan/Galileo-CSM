@@ -11,6 +11,8 @@ if [[ ! -d "$seabios_dir/.git" && ! -f "$seabios_dir/.git" ]]; then
   exit 1
 fi
 
+"$repo_root/scripts/apply-seabios-patches.sh"
+
 tmp_config="$(mktemp)"
 trap 'rm -f "$tmp_config"' EXIT
 

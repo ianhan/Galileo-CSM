@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 17:45:00 -0600
+Subject: [PATCH] SeaBIOS: use CSM BBS priority for USB storage
+
+Let CSM builds assign USB mass-storage boot priority from the BBS table
+before falling back to the fw_cfg bootorder path matcher.
+
+ src/boot.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/boot.c b/src/boot.c
+index 5c37dafd..493818b0 100644
+--- a/src/boot.c
++++ b/src/boot.c
+@@ -421,6 +421,12 @@ build_usb_path(char *buf, int max, struct usbhub_s *hub)
+ 
+ int bootprio_find_usb(struct usbdevice_s *usbdev, int lun)
+ {
++    if (CONFIG_CSM && usbdev->hub->cntl->pci) {
++        int prio = csm_bootprio_pci(usbdev->hub->cntl->pci);
++        if (prio >= 0)
++            return prio;
++    }
++
+     if (!CONFIG_BOOTORDER)
+         return -1;
+     // Find usb - examples:
+
+-- 
+2.43.0

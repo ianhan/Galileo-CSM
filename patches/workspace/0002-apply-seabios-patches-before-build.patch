@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 17:48:00 -0600
+Subject: [PATCH] scripts: apply SeaBIOS patches before CSM build
+
+Mirror the edk2 patch application flow for the SeaBIOS submodule so clean
+CSM builds pick up local SeaBIOS fixes before producing Csm16.bin.
+
+ scripts/apply-seabios-patches.sh | 24 ++++++++++++++++++++++++
+ scripts/build-seabios-csm.sh     |  2 ++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/scripts/apply-seabios-patches.sh b/scripts/apply-seabios-patches.sh
+new file mode 100755
+index 0000000..057a145
+--- /dev/null
++++ b/scripts/apply-seabios-patches.sh
+@@ -0,0 +1,24 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++seabios_dir="$repo_root/galileo/seabios"
++
++if [[ ! -d "$seabios_dir/.git" && ! -f "$seabios_dir/.git" ]]; then
++  echo "Missing SeaBIOS submodule at $seabios_dir" >&2
++  echo "Run: git submodule update --init --recursive" >&2
++  exit 1
++fi
++
++shopt -s nullglob
++for patch in "$repo_root"/patches/seabios/*.patch; do
++  if git -C "$seabios_dir" apply --check "$patch" 2>/dev/null; then
++    git -C "$seabios_dir" apply "$patch"
++    echo "applied $(basename "$patch")"
++  elif git -C "$seabios_dir" apply --reverse --check "$patch" 2>/dev/null; then
++    echo "already applied $(basename "$patch")"
++  else
++    echo "patch does not apply cleanly: $patch" >&2
++    exit 1
++  fi
++done
+diff --git a/scripts/build-seabios-csm.sh b/scripts/build-seabios-csm.sh
+index 7269913..e820a6d 100755
+--- a/scripts/build-seabios-csm.sh
++++ b/scripts/build-seabios-csm.sh
+@@ -11,6 +11,8 @@ if [[ ! -d "$seabios_dir/.git" && ! -f "$seabios_dir/.git" ]]; then
+   exit 1
+ fi
+ 
++"$repo_root/scripts/apply-seabios-patches.sh"
++
+ tmp_config="$(mktemp)"
+ trap 'rm -f "$tmp_config"' EXIT
+ 
+
+-- 
+2.43.0

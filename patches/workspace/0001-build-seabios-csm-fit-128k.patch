@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 15:04:00 -0600
+Subject: [PATCH] scripts: keep SeaBIOS CSM below 128 KiB
+
+The generic SeaBIOS CSM configuration grows to a 256 KiB Csm16.bin when built
+with debug level 3. LegacyBiosDxe shadows the CSM image at the top of the
+0xC0000-0xFFFFF legacy region and expects BiosStart to remain above the option
+ROM base at 0xC0000. A 256 KiB CSM image makes BiosStart equal to 0xC0000 and
+trips the low-memory layout assertion.
+
+Force a 128 KiB CSM output and reduce SeaBIOS debug verbosity enough to fit
+without dropping USB mass storage, drive services, option ROM support, or the
+legacy boot interfaces needed for DOS.
+
+With this configuration, the tested Csm16.bin is 131072 bytes and SeaBIOS
+reported:
+
+  Total size: 127392  Fixed: 73632  Free: 3680 (used 97.2% of 128KiB rom)
+
+---
+ scripts/build-seabios-csm.sh | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/scripts/build-seabios-csm.sh b/scripts/build-seabios-csm.sh
+index f5eb053..7269913 100755
+--- a/scripts/build-seabios-csm.sh
++++ b/scripts/build-seabios-csm.sh
+@@ -16,7 +16,8 @@ trap 'rm -f "$tmp_config"' EXIT
+ 
+ cat > "$tmp_config" <<'CONFIG'
+ CONFIG_CSM=y
+-CONFIG_DEBUG_LEVEL=3
++CONFIG_ROM_SIZE=128
++CONFIG_DEBUG_LEVEL=1
+ CONFIG_DEBUG_SERIAL=y
+ CONFIG_DEBUG_SERIAL_PORT=0x3f8
+ CONFIG_DEBUG_COREBOOT=n
+-- 
+2.43.0
