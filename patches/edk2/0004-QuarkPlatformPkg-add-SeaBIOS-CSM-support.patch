@@ -1,9 +1,20 @@
-From a8faeb343b146b4ee36b82cc772659a1602a9e1a Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Galileo CSM Workspace <galileo-csm@example.invalid>
 Date: Tue, 21 Apr 2026 12:28:46 -0600
 Subject: [PATCH] QuarkPlatformPkg: add SeaBIOS CSM support
 
----
+ .../Csm/LegacyBiosDxe/LegacyPci.c                  | 113 +++++---
+ OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.c          |  34 ++-
+ OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.h          |  19 +-
+ OvmfPkg/Csm/CsmSupportLib/CsmSupportLib.inf        |  56 ++--
+ OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.c        | 102 +++----
+ OvmfPkg/Csm/CsmSupportLib/LegacyInterrupt.h        |  38 +--
+ OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.c         | 311 ++++++++++++++-------
+ OvmfPkg/Csm/CsmSupportLib/LegacyPlatform.h         |  51 ++--
+ QuarkPlatformPkg/Quark.dsc                         | 121 +++++---
+ QuarkPlatformPkg/Quark.fdf                         |  53 ++--
+ 10 files changed, 525 insertions(+), 373 deletions(-)
+
 diff --git a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c
 index dc1f760876..7c1130e2aa 100644
 --- a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyPci.c
@@ -937,7 +948,7 @@ index 1479efc749..497ae24674 100644
  //
  // Type declarations
 diff --git a/QuarkPlatformPkg/Quark.dsc b/QuarkPlatformPkg/Quark.dsc
-index e5ebeb5e09..0d335847b8 100644
+index b0a98ec77d..0d335847b8 100644
 --- a/QuarkPlatformPkg/Quark.dsc
 +++ b/QuarkPlatformPkg/Quark.dsc
 @@ -31,10 +31,11 @@
@@ -1091,20 +1102,20 @@ index e5ebeb5e09..0d335847b8 100644
    #
    MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
    QuarkSocPkg/QuarkSouthCluster/Usb/Ohci/Dxe/OhciDxe.inf
-@@ -936,11 +975,14 @@
+@@ -936,14 +975,14 @@
      <LibraryClasses>
        PcdLib|MdePkg/Library/DxePcdLib/DxePcdLib.inf
    }
 -!endif
 -
++!endif
++
+ [BuildOptions]
+   GCC:*_*_IA32_CC_FLAGS = -Wno-error
+ 
 -[BuildOptions.common.EDKII.DXE_RUNTIME_DRIVER]
 -  MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
 -
-+!endif
-+
-+[BuildOptions]
-+  GCC:*_*_IA32_CC_FLAGS = -Wno-error
-+
 +[BuildOptions.common.EDKII.DXE_RUNTIME_DRIVER]
 +  MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
 +
@@ -1189,3 +1200,6 @@ index a48a3d41f2..99bbd4fb90 100644
       PEI_DEPEX PEI_DEPEX Optional        $(INF_OUTPUT)/$(MODULE_NAME).depex
       PE32      PE32    Align=4K          $(INF_OUTPUT)/$(MODULE_NAME).efi
       UI       STRING="$(MODULE_NAME)" Optional
+
+-- 
+2.43.0
