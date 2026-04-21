@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 00:00:00 -0600
+Subject: [PATCH 3/3] BaseTools: use array bytes APIs
+
+Python 3.12 removed the old array.fromstring() and array.tostring() aliases.
+Use frombytes() and tobytes() so the BaseTools PE and firmware-section parsing
+code runs on current Python 3 hosts.
+---
+ BaseTools/Source/Python/Common/Misc.py             | 2 +-
+ BaseTools/Source/Python/Eot/EotMain.py             | 10 +++++-----
+ BaseTools/Source/Python/GenFds/GenFdsGlobalVariable.py | 4 ++--
+ 3 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/BaseTools/Source/Python/Common/Misc.py b/BaseTools/Source/Python/Common/Misc.py
+index 9162b10b81..a3d5954954 100644
+--- a/BaseTools/Source/Python/Common/Misc.py
++++ b/BaseTools/Source/Python/Common/Misc.py
+@@ -1556,7 +1556,7 @@ class PeImageClass():
+         ByteArray = array.array('B')
+         ByteArray.fromfile(PeObject, 4)
+         # PE signature should be 'PE\0\0'
+-        if ByteArray.tostring() != b'PE\0\0':
++        if ByteArray.tobytes() != b'PE\0\0':
+             self.ErrorInfo = self.FileName + ' has no valid PE signature PE00'
+             return
+ 
+diff --git a/BaseTools/Source/Python/Eot/EotMain.py b/BaseTools/Source/Python/Eot/EotMain.py
+index e76f6fa685..8f86a26b78 100644
+--- a/BaseTools/Source/Python/Eot/EotMain.py
++++ b/BaseTools/Source/Python/Eot/EotMain.py
+@@ -152,11 +152,11 @@ class CompressedSection(Image):
+         try:
+             TmpData = DeCompress('Efi', self[self._HEADER_SIZE_:])
+             DecData = array('B')
+-            DecData.fromstring(TmpData)
++            DecData.frombytes(TmpData)
+         except:
+             TmpData = DeCompress('Framework', self[self._HEADER_SIZE_:])
+             DecData = array('B')
+-            DecData.fromstring(TmpData)
++            DecData.frombytes(TmpData)
+ 
+         SectionList = []
+         Offset = 0
+@@ -196,7 +196,7 @@ class Ui(Image):
+         return len(self)
+ 
+     def _GetUiString(self):
+-        return codecs.utf_16_decode(self[0:-2].tostring())[0]
++        return codecs.utf_16_decode(self[0:-2].tobytes())[0]
+ 
+     String = property(_GetUiString)
+ 
+@@ -738,7 +738,7 @@ class Ffs(Image):
+                 Offset = self.DataOffset - 4
+                 TmpData = DeCompress('Framework', self[self.Offset:])
+                 DecData = array('B')
+-                DecData.fromstring(TmpData)
++                DecData.frombytes(TmpData)
+                 Offset = 0
+                 while Offset < len(DecData):
+                     Sec = Section()
+@@ -759,7 +759,7 @@ class Ffs(Image):
+ 
+                 TmpData = DeCompress('Lzma', self[self.Offset:])
+                 DecData = array('B')
+-                DecData.fromstring(TmpData)
++                DecData.frombytes(TmpData)
+                 Offset = 0
+                 while Offset < len(DecData):
+                     Sec = Section()
+diff --git a/BaseTools/Source/Python/GenFds/GenFdsGlobalVariable.py b/BaseTools/Source/Python/GenFds/GenFdsGlobalVariable.py
+index 5a8f7dbcee..6a6de62e9c 100644
+--- a/BaseTools/Source/Python/GenFds/GenFdsGlobalVariable.py
++++ b/BaseTools/Source/Python/GenFds/GenFdsGlobalVariable.py
+@@ -469,11 +469,11 @@ class GenFdsGlobalVariable:
+                     GenFdsGlobalVariable.SecCmdList.append(' '.join(Cmd).strip())
+             else:
+                 SectionData = array('B', [0, 0, 0, 0])
+-                SectionData.fromstring(Ui.encode("utf_16_le"))
++                SectionData.frombytes(Ui.encode("utf_16_le"))
+                 SectionData.append(0)
+                 SectionData.append(0)
+                 Len = len(SectionData)
+                 GenFdsGlobalVariable.SectionHeader.pack_into(SectionData, 0, Len & 0xff, (Len >> 8) & 0xff, (Len >> 16) & 0xff, 0x15)
+-                SaveFileOnChange(Output, SectionData.tostring())
++                SaveFileOnChange(Output, SectionData.tobytes())
+ 
+         elif Ver:
+             Cmd += ("-n", Ver)
+-- 
+2.43.0
+

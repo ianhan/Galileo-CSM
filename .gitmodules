@@ -1,0 +1,9 @@
+[submodule "galileo/edk2"]
+	path = galileo/edk2
+	url = https://github.com/tianocore/edk2.git
+[submodule "galileo/edk2-non-osi"]
+	path = galileo/edk2-non-osi
+	url = https://github.com/tianocore/edk2-non-osi.git
+[submodule "galileo/seabios"]
+	path = galileo/seabios
+	url = https://github.com/coreboot/seabios.git

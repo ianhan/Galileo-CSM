@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 00:00:00 -0600
+Subject: [PATCH 2/2] QuarkPlatformPkg: relax Werror for modern GCC
+
+The 2019 Quark baseline still inherits global GCC -Werror settings. Current
+host GCC releases diagnose additional issues in shared drivers, which blocks
+using this tree as a bring-up baseline.
+
+Keep those diagnostics visible, but do not promote them to hard errors for the
+Quark IA32 GCC build. This gives the workspace a buildable modern-toolchain
+baseline while later patches can convert individual warnings into source fixes.
+---
+ QuarkPlatformPkg/Quark.dsc | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/QuarkPlatformPkg/Quark.dsc b/QuarkPlatformPkg/Quark.dsc
+index 62e82a951f..cf785a96a7 100644
+--- a/QuarkPlatformPkg/Quark.dsc
++++ b/QuarkPlatformPkg/Quark.dsc
+@@ -938,6 +938,9 @@
+   }
+ !endif
+ 
++[BuildOptions]
++  GCC:*_*_IA32_CC_FLAGS = -Wno-error
++
+ [BuildOptions.common.EDKII.DXE_RUNTIME_DRIVER]
+   MSFT:*_*_*_DLINK_FLAGS = /ALIGN:4096
+ 
+-- 
+2.43.0
+

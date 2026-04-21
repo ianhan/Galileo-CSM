@@ -1,0 +1,53 @@
+From 9b9ba2d3e69c64fcb0e5a4bfe2b91f447f4b0bb7 Mon Sep 17 00:00:00 2001
+From: Galileo CSM Workspace <galileo-csm@example.invalid>
+Date: Tue, 21 Apr 2026 14:24:19 -0600
+Subject: [PATCH] QuarkPlatformPkg: enter Boot Manager Menu on boot
+
+---
+ QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c | 26 ++++++++++++++++++++++++++
+ 1 file changed, 26 insertions(+)
+
+diff --git a/QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c b/QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
+index c00284c262..565986d323 100644
+--- a/QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
++++ b/QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c
+@@ -168,6 +168,30 @@ PlatformRegisterFvBootOption (
+   }
+ }
+ 
++STATIC
++VOID
++PlatformEnterBootManagerMenu (
++  VOID
++  )
++{
++  EFI_STATUS                    Status;
++  EFI_BOOT_MANAGER_LOAD_OPTION  BootOption;
++
++  Status = EfiBootManagerGetBootManagerMenu (&BootOption);
++  if (Status == EFI_NOT_FOUND) {
++    DEBUG ((DEBUG_WARN, "Boot Manager Menu is not available\n"));
++    return;
++  }
++
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_WARN, "Boot Manager Menu boot option update failed: %r\n", Status));
++  }
++
++  Print (L"\nEntering Boot Manager Menu.\n");
++  EfiBootManagerBoot (&BootOption);
++  EfiBootManagerFreeLoadOption (&BootOption);
++}
++
+ VOID
+ EFIAPI
+ InternalBdsEmptyCallbackFuntion (
+@@ -389,6 +413,8 @@ PlatformBootManagerAfterConsole (
+     break;
+   }
+ 
++  PlatformEnterBootManagerMenu ();
++
+   Print (
+     L"\n"
+     L"F2      to enter Boot Manager Menu.\n"
