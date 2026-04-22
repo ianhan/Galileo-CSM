@@ -9,9 +9,9 @@ with debug level 3. LegacyBiosDxe shadows the CSM image at the top of the
 ROM base at 0xC0000. A 256 KiB CSM image makes BiosStart equal to 0xC0000 and
 trips the low-memory layout assertion.
 
-Force a 128 KiB CSM output and reduce SeaBIOS debug verbosity enough to fit
-without dropping USB mass storage, drive services, option ROM support, or the
-legacy boot interfaces needed for DOS.
+Force a 128 KiB CSM output, reduce SeaBIOS debug verbosity enough to fit, and
+disable legacy serial debug output. Galileo bring-up is using VGA-visible
+breadcrumbs; serial debug at 0x3f8 can block on platforms without that UART.
 
 With this configuration, the tested Csm16.bin is 131072 bytes and SeaBIOS
 reported:
@@ -19,22 +19,27 @@ reported:
   Total size: 127392  Fixed: 73632  Free: 3680 (used 97.2% of 128KiB rom)
 
 ---
- scripts/build-seabios-csm.sh | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
+ scripts/build-seabios-csm.sh | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
 
 diff --git a/scripts/build-seabios-csm.sh b/scripts/build-seabios-csm.sh
 index f5eb053..7269913 100755
 --- a/scripts/build-seabios-csm.sh
 +++ b/scripts/build-seabios-csm.sh
-@@ -16,7 +16,8 @@ trap 'rm -f "$tmp_config"' EXIT
+@@ -16,10 +16,11 @@ trap 'rm -f "$tmp_config"' EXIT
  
  cat > "$tmp_config" <<'CONFIG'
  CONFIG_CSM=y
 -CONFIG_DEBUG_LEVEL=3
+-CONFIG_DEBUG_SERIAL=y
+-CONFIG_DEBUG_SERIAL_PORT=0x3f8
 +CONFIG_ROM_SIZE=128
-+CONFIG_DEBUG_LEVEL=1
- CONFIG_DEBUG_SERIAL=y
- CONFIG_DEBUG_SERIAL_PORT=0x3f8
++CONFIG_DEBUG_LEVEL=0
++CONFIG_DEBUG_SERIAL=n
++CONFIG_DEBUG_SERIAL_PORT=0
  CONFIG_DEBUG_COREBOOT=n
+ CONFIG_DEBUG_IO=n
+ CONFIG_DEBUG_HTTPS=n
+ CONFIG
 -- 
 2.43.0

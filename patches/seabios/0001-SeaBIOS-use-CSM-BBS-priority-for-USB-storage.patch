@@ -9,10 +9,15 @@ USB discovery from Legacy16UpdateBbs while edk2 owns the USB controller.
 
 Track SeaBIOS USB drives during normal PrepareToBoot hardware discovery
 and reapply the selected CSM BBS priority to the matching INT 13h drive
-before the SeaBIOS boot menu and final boot ordering run.
+before the SeaBIOS boot menu and final boot ordering run. The matching key
+uses the USB path and LUN so hubs and multi-LUN devices are not collapsed
+into one fake disk entry.
+
+Also keep temporary VGA breadcrumbs around the SeaBIOS boot handoff path so
+bring-up logs are visible on systems without a working legacy serial port.
 
 diff --git a/src/boot.c b/src/boot.c
-index 5c37dafd..29202a21 100644
+index 5c37dafd..75c6fedf 100644
 --- a/src/boot.c
 +++ b/src/boot.c
 @@ -522,26 +522,11 @@ static struct hlist_head BootList VARVERIFY32INIT;
@@ -100,8 +105,121 @@ index 5c37dafd..29202a21 100644
  
  /****************************************************************
   * Keyboard calls
+@@ -787,6 +814,9 @@ interactive_bootmenu(void)
+     }
+     printf("\n");
+ 
++    printf("CSMDBG: bootmenu selected '%s' type=%d prio=%d data=%x\n",
++            boot->description, boot->type, boot->priority, boot->data);
++
+     // Find entry and make top priority.
+     hlist_del(&boot->node);
+     boot->priority = 0;
+@@ -823,6 +853,8 @@ bcv_prepboot(void)
+     if (! CONFIG_BOOT)
+         return;
+ 
++    printf("CSMDBG: bcv_prepboot begin\n");
++
+     int haltprio = find_prio("HALT");
+     if (haltprio >= 0)
+         bootentry_add(IPL_TYPE_HALT, haltprio, 0, "HALT");
+@@ -830,21 +862,33 @@ bcv_prepboot(void)
+     // Map drives and populate BEV list
+     struct bootentry_s *pos;
+     hlist_for_each_entry(pos, &BootList, node) {
++        printf("CSMDBG: bcv_prepboot entry '%s' type=%d prio=%d data=%x\n",
++                pos->description, pos->type, pos->priority, pos->data);
+         switch (pos->type) {
+         case IPL_TYPE_BCV:
++            printf("CSMDBG: before call_bcv %04x:%04x\n",
++                    pos->vector.seg, pos->vector.offset);
+             call_bcv(pos->vector.seg, pos->vector.offset);
++            printf("CSMDBG: after call_bcv %04x:%04x\n",
++                    pos->vector.seg, pos->vector.offset);
+             add_bev(IPL_TYPE_HARDDISK, 0);
+             break;
+         case IPL_TYPE_FLOPPY:
++            printf("CSMDBG: before map_floppy_drive %p\n", pos->drive);
+             map_floppy_drive(pos->drive);
++            printf("CSMDBG: after map_floppy_drive %p\n", pos->drive);
+             add_bev(IPL_TYPE_FLOPPY, 0);
+             break;
+         case IPL_TYPE_HARDDISK:
++            printf("CSMDBG: before map_hd_drive %p\n", pos->drive);
+             map_hd_drive(pos->drive);
++            printf("CSMDBG: after map_hd_drive %p\n", pos->drive);
+             add_bev(IPL_TYPE_HARDDISK, 0);
+             break;
+         case IPL_TYPE_CDROM:
++            printf("CSMDBG: before map_cd_drive %p\n", pos->drive);
+             map_cd_drive(pos->drive);
++            printf("CSMDBG: after map_cd_drive %p\n", pos->drive);
+             // NO BREAK
+         default:
+             add_bev(pos->type, pos->data);
+@@ -855,6 +899,8 @@ bcv_prepboot(void)
+     // If nothing added a floppy/hd boot - add it manually.
+     add_bev(IPL_TYPE_FLOPPY, 0);
+     add_bev(IPL_TYPE_HARDDISK, 0);
++    printf("CSMDBG: bcv_prepboot end BEVCount=%d HaveHDBoot=%d HaveFDBoot=%d\n",
++            BEVCount, HaveHDBoot, HaveFDBoot);
+ }
+ 
+ 
+@@ -884,6 +930,8 @@ boot_disk(u8 bootdrv, int checksig)
+     u16 bootseg = 0x07c0;
+ 
+     // Read sector
++    printf("CSMDBG: boot_disk drv=%02x checksig=%d before int13 read\n",
++            bootdrv, checksig);
+     struct bregs br;
+     memset(&br, 0, sizeof(br));
+     br.flags = F_IF;
+@@ -893,6 +941,8 @@ boot_disk(u8 bootdrv, int checksig)
+     br.al = 1;
+     br.cl = 1;
+     call16_int(0x13, &br);
++    printf("CSMDBG: boot_disk after int13 flags=%04x ah=%02x al=%02x\n",
++            br.flags, br.ah, br.al);
+ 
+     if (br.flags & F_CF) {
+         printf("Boot failed: could not read the boot disk\n\n");
+@@ -907,6 +957,7 @@ boot_disk(u8 bootdrv, int checksig)
+         }
+     }
+ 
++    printf("CSMDBG: boot_disk MBR signature ok\n");
+     tpm_add_bcv(bootdrv, MAKE_FLATPTR(bootseg, 0), 512);
+ 
+     /* Canonicalize bootseg:bootip */
+@@ -994,6 +1045,8 @@ do_boot(int seq_nr)
+ 
+     // Boot the given BEV type.
+     struct bev_s *ie = &BEV[seq_nr];
++    printf("CSMDBG: do_boot seq=%d BEVCount=%d type=%d vector=%08x\n",
++            seq_nr, BEVCount, ie->type, ie->vector);
+     switch (ie->type) {
+     case IPL_TYPE_FLOPPY:
+         printf("Booting from Floppy...\n");
+@@ -1031,6 +1084,7 @@ void VISIBLE32FLAT
+ handle_18(void)
+ {
+     debug_enter(NULL, DEBUG_HDL_18);
++    printf("CSMDBG: int18 entry BootSequence=%d\n", BootSequence);
+     int seq = BootSequence + 1;
+     BootSequence = seq;
+     do_boot(seq);
+@@ -1041,6 +1095,7 @@ void VISIBLE32FLAT
+ handle_19(void)
+ {
+     debug_enter(NULL, DEBUG_HDL_19);
++    printf("CSMDBG: int19 entry\n");
+     BootSequence = 0;
+     do_boot(0);
+ }
 diff --git a/src/fw/csm.c b/src/fw/csm.c
-index 579debdc..60484748 100644
+index 579debdc..ad70e9c9 100644
 --- a/src/fw/csm.c
 +++ b/src/fw/csm.c
 @@ -9,8 +9,10 @@
@@ -123,15 +241,17 @@ index 579debdc..60484748 100644
  #include "util.h" // copy_smbios_21
  
  #define UINT8 u8
-@@ -43,6 +46,17 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
+@@ -43,6 +46,19 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
  
  static u16 PICMask = PIC_IRQMASK_DEFAULT;
  
 +#define CSM_USB_BBS_SIGNATURE 0x42535545u
++#define CSM_USB_BBS_KEY_INIT 0x811c9dc5u
 +
 +struct csm_usb_drive_s {
 +    struct drive_s *drive;
 +    struct pci_device *pci;
++    u32 key;
 +    int lun;
 +    struct csm_usb_drive_s *next;
 +};
@@ -141,10 +261,42 @@ index 579debdc..60484748 100644
  extern void __csm_return(struct bregs *regs) __noreturn;
  
  static void
-@@ -59,6 +73,40 @@ csm_return(struct bregs *regs)
+@@ -59,6 +75,73 @@ csm_return(struct bregs *regs)
      __csm_return(regs);
  }
  
++static u32
++csm_usb_bbs_key_update(u32 key, u8 data)
++{
++    key ^= data;
++    key *= 16777619;
++    return key;
++}
++
++static u32
++csm_usb_bbs_key_hub(u32 key, struct usbhub_s *hub)
++{
++    if (!hub || !hub->usbdev)
++        return key;
++
++    key = csm_usb_bbs_key_hub(key, hub->usbdev->hub);
++    key = csm_usb_bbs_key_update(key, hub->usbdev->port);
++    key = csm_usb_bbs_key_update(
++        key, hub->usbdev->iface ? hub->usbdev->iface->bInterfaceNumber : 0);
++    return key;
++}
++
++static u32
++csm_usb_bbs_key(struct usbdevice_s *usbdev, int lun)
++{
++    u32 key = csm_usb_bbs_key_hub(CSM_USB_BBS_KEY_INIT, usbdev->hub);
++    key = csm_usb_bbs_key_update(key, usbdev->port);
++    key = csm_usb_bbs_key_update(
++        key, usbdev->iface ? usbdev->iface->bInterfaceNumber : 0);
++    key = csm_usb_bbs_key_update(key, lun & 0xff);
++    return key;
++}
++
 +void
 +csm_register_usb_drive(struct usbdevice_s *usbdev, int lun, struct drive_s *drive)
 +{
@@ -170,19 +322,20 @@ index 579debdc..60484748 100644
 +    memset(entry, 0, sizeof(*entry));
 +    entry->drive = drive;
 +    entry->pci = usbdev->hub->cntl->pci;
++    entry->key = csm_usb_bbs_key(usbdev, lun);
 +    entry->lun = lun;
 +    *pprev = entry;
 +
-+    dprintf(3, "CSM registered USB drive %p on PCI %02x:%02x.%x lun %d\n",
++    dprintf(3, "CSM registered USB drive %p on PCI %02x:%02x.%x lun %d key %08x\n",
 +            drive, pci_bdf_to_bus(entry->pci->bdf),
 +            pci_bdf_to_dev(entry->pci->bdf), pci_bdf_to_fn(entry->pci->bdf),
-+            lun);
++            lun, entry->key);
 +}
 +
  static void
  csm_maininit(struct bregs *regs)
  {
-@@ -144,6 +192,7 @@ handle_csm_0002(struct bregs *regs)
+@@ -144,6 +227,7 @@ handle_csm_0002(struct bregs *regs)
      }
  
      dprintf(3, "PrepareToBoot table %04x:%04x\n", regs->es, regs->bx);
@@ -190,15 +343,34 @@ index 579debdc..60484748 100644
  
      struct e820entry *p = (void *)csm_compat_table.E820Pointer;
      int i;
-@@ -190,6 +239,7 @@ handle_csm_0002(struct bregs *regs)
+@@ -190,9 +274,14 @@ handle_csm_0002(struct bregs *regs)
      clock_setup();
      device_hardware_setup();
      wait_threads();
 +    boot_update_csm_priorities();
++    printf("CSMDBG: before interactive_bootmenu\n");
      interactive_bootmenu();
++    printf("CSMDBG: after interactive_bootmenu\n");
  
++    printf("CSMDBG: before prepareboot\n");
      prepareboot();
-@@ -336,6 +386,42 @@ static int csm_prio_to_seabios(u16 csm_prio)
++    printf("CSMDBG: after prepareboot\n");
+ 
+     regs->ax = 0;
+ }
+@@ -207,9 +296,11 @@ handle_csm_0003(struct bregs *regs)
+     }
+ 
+     dprintf(3, "Boot\n");
++    printf("CSMDBG: Legacy16Boot entry\n");
+ 
+     startBoot();
+ 
++    printf("CSMDBG: Legacy16Boot startBoot returned\n");
+     regs->ax = 1;
+ }
+ 
+@@ -336,6 +427,42 @@ static int csm_prio_to_seabios(u16 csm_prio)
      }
  }
  
@@ -224,9 +396,9 @@ index 579debdc..60484748 100644
 +                continue;
 +
 +            if (bbs[i].IBV1 == CSM_USB_BBS_SIGNATURE
-+                && (bbs[i].IBV2 & 0xff) == pos->lun) {
-+                dprintf(3, "CSM bootprio for USB drive %p lun %d "
-+                        "(BBS %d) is %d\n", drive, pos->lun, i,
++                && bbs[i].IBV2 == pos->key) {
++                dprintf(3, "CSM bootprio for USB drive %p lun %d key %08x "
++                        "(BBS %d) is %d\n", drive, pos->lun, pos->key, i,
 +                        bbs[i].BootPriority);
 +                return csm_prio_to_seabios(bbs[i].BootPriority);
 +            }
@@ -265,6 +437,65 @@ index 6a8decc0..3cc86880 100644
      return 0;
  }
  
+diff --git a/src/post.c b/src/post.c
+index f93106a1..55c18e46 100644
+--- a/src/post.c
++++ b/src/post.c
+@@ -161,35 +161,54 @@ void
+ prepareboot(void)
+ {
+     // Change TPM phys. presence state befor leaving BIOS
++    printf("CSMDBG: prepareboot begin\n");
++    printf("CSMDBG: before tpm_prepboot\n");
+     tpm_prepboot();
++    printf("CSMDBG: after tpm_prepboot\n");
+ 
+     // Run BCVs
++    printf("CSMDBG: before bcv_prepboot\n");
+     bcv_prepboot();
++    printf("CSMDBG: after bcv_prepboot\n");
+ 
+     // Finalize data structures before boot
++    printf("CSMDBG: before cdrom_prepboot\n");
+     cdrom_prepboot();
++    printf("CSMDBG: after cdrom_prepboot\n");
++    printf("CSMDBG: before pmm_prepboot\n");
+     pmm_prepboot();
++    printf("CSMDBG: after pmm_prepboot\n");
++    printf("CSMDBG: before malloc_prepboot\n");
+     malloc_prepboot();
++    printf("CSMDBG: after malloc_prepboot\n");
++    printf("CSMDBG: before e820_prepboot\n");
+     e820_prepboot();
++    printf("CSMDBG: after e820_prepboot\n");
+ 
+     HaveRunPost = 2;
+ 
+     // Setup bios checksum.
++    printf("CSMDBG: before BIOS checksum update\n");
+     BiosChecksum -= checksum((u8*)BUILD_BIOS_ADDR, BUILD_BIOS_SIZE);
++    printf("CSMDBG: prepareboot end\n");
+ }
+ 
+ // Begin the boot process by invoking an int0x19 in 16bit mode.
+ void VISIBLE32FLAT
+ startBoot(void)
+ {
++    printf("CSMDBG: startBoot entry\n");
++
+     // Clear low-memory allocations (required by PMM spec).
+     memset((void*)BUILD_STACK_ADDR, 0, BUILD_EBDA_MINIMUM - BUILD_STACK_ADDR);
+ 
+     dprintf(3, "Jump to int19\n");
++    printf("CSMDBG: before int19\n");
+     struct bregs br;
+     memset(&br, 0, sizeof(br));
+     br.flags = F_IF;
+     call16_int(0x19, &br);
++    printf("CSMDBG: int19 returned flags=%04x ax=%04x\n", br.flags, br.ax);
+ }
+ 
+ // Main setup code.
 diff --git a/src/util.h b/src/util.h
 index aff8e888..735f9282 100644
 --- a/src/util.h
@@ -280,3 +511,6 @@ index aff8e888..735f9282 100644
  int get_keystroke_full(int msec);
  int get_keystroke(int msec);
  struct chs_s;
+
+-- 
+2.43.0

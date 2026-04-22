@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Galileo CSM Workspace <galileo-csm@example.invalid>
 Date: Tue, 21 Apr 2026 17:40:00 -0600
-Subject: [PATCH] QuarkPlatformPkg: enter boot manager on boot
+Subject: [PATCH] QuarkPlatformPkg: refresh CSM boot options for USB
 
 Force the platform boot manager to enter the firmware UI so legacy CSM
 boot options are visible without an existing BootNext/BootOrder selection.
@@ -10,106 +10,121 @@ Keep legacy Boot#### variables compatible with GenericBds and rEFInd by
 storing BBS_TABLE plus BbsIndex optional data.
 
 Publish USB mass-storage devices that edk2 already connected as CSM BBS
-hard-disk entries. This bridges UEFI USB BlockIo media to legacy boot
-candidate discovery without running SeaBIOS USB discovery while the boot
-manager refreshes options.
+hard-disk entries. Match those entries with a stable USB path key so CSM
+boot priority lines up with the SeaBIOS INT 13h drive that was actually
+registered, without adding fake disks in SeaBIOS.
 
 diff --git a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
-index 6b1dd344f3..b0acdbed2e 100644
+index 6b1dd344f3..7b812f5c07 100644
 --- a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
 +++ b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
-@@ -18,10 +18,200 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+@@ -18,9 +18,244 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
  #define FLOPPY_PRESENT_WITH_MEDIA    1
  #define FLOPPY_PRESENT_NO_MEDIA      2
  
+-BBS_TABLE           *mBbsTable;
+-BOOLEAN             mBbsTableDoneFlag   = FALSE;
+-BOOLEAN             IsHaveMediaInFloppy = TRUE;
 +#define CSM_USB_BBS_SIGNATURE  SIGNATURE_32 ('E', 'U', 'S', 'B')
++#define CSM_USB_BBS_KEY_INIT   0x811c9dc5
 +
- BBS_TABLE           *mBbsTable;
- BOOLEAN             mBbsTableDoneFlag   = FALSE;
- BOOLEAN             IsHaveMediaInFloppy = TRUE;
- 
++BBS_TABLE           *mBbsTable;
++BOOLEAN             mBbsTableDoneFlag   = FALSE;
++BOOLEAN             IsHaveMediaInFloppy = TRUE;
++
 +STATIC
-+BOOLEAN
-+LegacyBiosDevicePathIsUsb (
-+  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
++UINT32
++LegacyBiosUsbBbsKeyUpdate (
++  IN UINT32  Key,
++  IN UINT8   Data
 +  )
 +{
++  Key ^= Data;
++  Key *= 16777619;
++
++  return Key;
++}
++
++STATIC
++BOOLEAN
++LegacyBiosUsbDevicePathKey (
++  IN  EFI_DEVICE_PATH_PROTOCOL  *DevicePath,
++  OUT UINT32                    *Key
++  )
++{
++  BOOLEAN                           HaveUsbNode;
++  UINT8                             Lun;
++  USB_DEVICE_PATH                   *Usb;
++  DEVICE_LOGICAL_UNIT_DEVICE_PATH   *LogicalUnit;
++
++  if ((DevicePath == NULL) || (Key == NULL)) {
++    return FALSE;
++  }
++
++  HaveUsbNode = FALSE;
++  Lun         = 0;
++  *Key        = CSM_USB_BBS_KEY_INIT;
++
 +  while (!IsDevicePathEnd (DevicePath)) {
-+    if ((DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) &&
-+        (DevicePathSubType (DevicePath) == MSG_USB_DP)) {
-+      return TRUE;
++    if (DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) {
++      switch (DevicePathSubType (DevicePath)) {
++      case MSG_USB_DP:
++        Usb         = (USB_DEVICE_PATH *) DevicePath;
++        *Key        = LegacyBiosUsbBbsKeyUpdate (*Key, Usb->ParentPortNumber);
++        *Key        = LegacyBiosUsbBbsKeyUpdate (*Key, Usb->InterfaceNumber);
++        HaveUsbNode = TRUE;
++        break;
++
++      case MSG_DEVICE_LOGICAL_UNIT_DP:
++        LogicalUnit = (DEVICE_LOGICAL_UNIT_DEVICE_PATH *) DevicePath;
++        Lun         = LogicalUnit->Lun;
++        break;
++      }
 +    }
 +
 +    DevicePath = NextDevicePathNode (DevicePath);
++  }
++
++  if (!HaveUsbNode) {
++    return FALSE;
++  }
++
++  *Key = LegacyBiosUsbBbsKeyUpdate (*Key, Lun);
++  return TRUE;
++}
++
++STATIC
++BOOLEAN
++LegacyBiosUsbBbsEntryExists (
++  IN BBS_TABLE  *BbsTable,
++  IN UINT32     BbsCount,
++  IN UINTN      Bus,
++  IN UINTN      Device,
++  IN UINTN      Function,
++  IN UINT32     UsbKey
++  )
++{
++  UINT32  Index;
++
++  for (Index = 0; Index < BbsCount; Index++) {
++    if ((BbsTable[Index].Bus == (UINT32) Bus) &&
++        (BbsTable[Index].Device == (UINT32) Device) &&
++        (BbsTable[Index].Function == (UINT32) Function) &&
++        (BbsTable[Index].Class == PCI_CLASS_SERIAL) &&
++        (BbsTable[Index].SubClass == PCI_CLASS_SERIAL_USB) &&
++        (BbsTable[Index].DeviceType == BBS_HARDDISK) &&
++        (BbsTable[Index].IBV1 == CSM_USB_BBS_SIGNATURE) &&
++        (BbsTable[Index].IBV2 == UsbKey)) {
++      return TRUE;
++    }
 +  }
 +
 +  return FALSE;
 +}
 +
 +STATIC
-+UINT8
-+LegacyBiosUsbDevicePathLun (
-+  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
-+  )
-+{
-+  while (!IsDevicePathEnd (DevicePath)) {
-+    if ((DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) &&
-+        (DevicePathSubType (DevicePath) == MSG_DEVICE_LOGICAL_UNIT_DP)) {
-+      return ((DEVICE_LOGICAL_UNIT_DEVICE_PATH *) DevicePath)->Lun;
-+    }
-+
-+    DevicePath = NextDevicePathNode (DevicePath);
-+  }
-+
-+  return 0;
-+}
-+
-+STATIC
-+EFI_STATUS
-+LegacyBiosGetPciLocationFromDevicePath (
-+  IN  EFI_DEVICE_PATH_PROTOCOL  *DevicePath,
-+  OUT UINTN                     *Segment,
-+  OUT UINTN                     *Bus,
-+  OUT UINTN                     *Device,
-+  OUT UINTN                     *Function
-+  )
-+{
-+  EFI_STATUS                Status;
-+  EFI_HANDLE                PciHandle;
-+  EFI_PCI_IO_PROTOCOL       *PciIo;
-+  EFI_DEVICE_PATH_PROTOCOL  *PciDevicePath;
-+  EFI_DEVICE_PATH_PROTOCOL  *RemainingDevicePath;
-+
-+  PciDevicePath = DuplicateDevicePath (DevicePath);
-+  if (PciDevicePath == NULL) {
-+    return EFI_OUT_OF_RESOURCES;
-+  }
-+
-+  RemainingDevicePath = PciDevicePath;
-+  Status = gBS->LocateDevicePath (
-+                  &gEfiPciIoProtocolGuid,
-+                  &RemainingDevicePath,
-+                  &PciHandle
-+                  );
-+  if (!EFI_ERROR (Status)) {
-+    Status = gBS->HandleProtocol (
-+                    PciHandle,
-+                    &gEfiPciIoProtocolGuid,
-+                    (VOID **) &PciIo
-+                    );
-+  }
-+
-+  if (!EFI_ERROR (Status)) {
-+    Status = PciIo->GetLocation (PciIo, Segment, Bus, Device, Function);
-+  }
-+
-+  FreePool (PciDevicePath);
-+  return Status;
-+}
-+
-+STATIC
 +VOID
-+LegacyBiosAppendUsbMassStorageBbsEntries (
++LegacyBiosAppendUsbDiskBbsEntries (
 +  IN LEGACY_BIOS_INSTANCE  *Private
 +  )
 +{
@@ -119,9 +134,14 @@ index 6b1dd344f3..b0acdbed2e 100644
 +  UINTN                     HandleIndex;
 +  EFI_BLOCK_IO_PROTOCOL     *BlockIo;
 +  EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
++  EFI_DEVICE_PATH_PROTOCOL  *PciDevicePath;
++  EFI_DEVICE_PATH_PROTOCOL  *OriginalPciDevicePath;
++  EFI_PCI_IO_PROTOCOL       *PciIo;
++  EFI_HANDLE                PciHandle;
 +  EFI_TO_COMPATIBILITY16_BOOT_TABLE *BootTable;
 +  BBS_TABLE                 *BbsTable;
 +  UINT32                    BbsIndex;
++  UINT32                    UsbKey;
 +  UINTN                     Segment;
 +  UINTN                     Bus;
 +  UINTN                     Device;
@@ -149,30 +169,58 @@ index 6b1dd344f3..b0acdbed2e 100644
 +                    &gEfiBlockIoProtocolGuid,
 +                    (VOID **) &BlockIo
 +                    );
-+    if (EFI_ERROR (Status) ||
-+        (BlockIo->Media == NULL) ||
++    if (EFI_ERROR (Status)) {
++      continue;
++    }
++
++    if ((BlockIo->Media == NULL) ||
 +        !BlockIo->Media->MediaPresent ||
 +        BlockIo->Media->LogicalPartition) {
 +      continue;
 +    }
 +
-+    Status = gBS->HandleProtocol (
-+                    HandleBuffer[HandleIndex],
-+                    &gEfiDevicePathProtocolGuid,
-+                    (VOID **) &DevicePath
-+                    );
-+    if (EFI_ERROR (Status) || !LegacyBiosDevicePathIsUsb (DevicePath)) {
++    DevicePath = DevicePathFromHandle (HandleBuffer[HandleIndex]);
++    if (!LegacyBiosUsbDevicePathKey (DevicePath, &UsbKey)) {
 +      continue;
 +    }
 +
-+    Status = LegacyBiosGetPciLocationFromDevicePath (
-+               DevicePath,
-+               &Segment,
-+               &Bus,
-+               &Device,
-+               &Function
-+               );
++    OriginalPciDevicePath = DuplicateDevicePath (DevicePath);
++    if (OriginalPciDevicePath == NULL) {
++      continue;
++    }
++
++    PciDevicePath = OriginalPciDevicePath;
++    PciHandle     = NULL;
++    Status = gBS->LocateDevicePath (
++                    &gEfiPciIoProtocolGuid,
++                    &PciDevicePath,
++                    &PciHandle
++                    );
++    if (!EFI_ERROR (Status)) {
++      Status = gBS->HandleProtocol (
++                      PciHandle,
++                      &gEfiPciIoProtocolGuid,
++                      (VOID **) &PciIo
++                      );
++    }
++    FreePool (OriginalPciDevicePath);
 +    if (EFI_ERROR (Status)) {
++      continue;
++    }
++
++    Status = PciIo->GetLocation (PciIo, &Segment, &Bus, &Device, &Function);
++    if (EFI_ERROR (Status)) {
++      continue;
++    }
++
++    if (LegacyBiosUsbBbsEntryExists (
++          BbsTable,
++          BbsIndex,
++          Bus,
++          Device,
++          Function,
++          UsbKey
++          )) {
 +      continue;
 +    }
 +
@@ -188,19 +236,19 @@ index 6b1dd344f3..b0acdbed2e 100644
 +    BbsTable[BbsIndex].Class                    = PCI_CLASS_SERIAL;
 +    BbsTable[BbsIndex].SubClass                 = PCI_CLASS_SERIAL_USB;
 +    BbsTable[BbsIndex].DeviceType               = BBS_HARDDISK;
-+    BbsTable[BbsIndex].StatusFlags.MediaPresent = 2;
++    BbsTable[BbsIndex].StatusFlags.MediaPresent = 1;
 +    BbsTable[BbsIndex].AssignedDriveNumber      = 0xff;
 +    BbsTable[BbsIndex].IBV1                     = CSM_USB_BBS_SIGNATURE;
-+    BbsTable[BbsIndex].IBV2                     = LegacyBiosUsbDevicePathLun (DevicePath);
++    BbsTable[BbsIndex].IBV2                     = UsbKey;
 +
 +    DEBUG ((
 +      EFI_D_INFO,
-+      "LegacyBios: added USB BBS entry %u for %02x/%02x/%02x lun %u\n",
++      "LegacyBios: added USB disk BBS entry %u for %02x/%02x/%02x key %08x\n",
 +      (UINTN) BbsIndex,
 +      (UINTN) Bus,
 +      (UINTN) Device,
 +      (UINTN) Function,
-+      (UINTN) BbsTable[BbsIndex].IBV2
++      (UINTN) UsbKey
 +      ));
 +
 +    BbsIndex++;
@@ -215,21 +263,22 @@ index 6b1dd344f3..b0acdbed2e 100644
 +    FreePool (HandleBuffer);
 +  }
 +}
-+
+ 
  /**
    Checks the state of the floppy and if media is inserted.
- 
-@@ -363,6 +553,8 @@ LegacyBiosGetBbsInfo (
+@@ -363,7 +598,9 @@ LegacyBiosGetBbsInfo (
      if (Regs.X.AX != 0) {
        return EFI_DEVICE_ERROR;
      }
+-  }
 +
-+    LegacyBiosAppendUsbMassStorageBbsEntries (Private);
-   }
++    LegacyBiosAppendUsbDiskBbsEntries (Private);
++  }
  
    if (HandleBuffer != NULL) {
+     FreePool (HandleBuffer);
 diff --git a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c b/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
-index af7d80eb5f..4df8983588 100644
+index af7d80eb5f..721ef017ae 100644
 --- a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
 +++ b/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
 @@ -16,6 +16,26 @@ CHAR16    mLegacyBootStorageName[]  = L"LegacyBootData";
@@ -336,10 +385,54 @@ index 292e2c1e7a..74111a6fef 100644
  } LEGACY_BM_BOOT_OPTION_BBS_DATA;
  #pragma pack()
 diff --git a/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c b/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c
-index 6138a32ad7..93ae8b0699 100644
+index 6138a32ad7..09ec4fdb84 100644
 --- a/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c
 +++ b/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c
-@@ -194,6 +194,76 @@ LegacyBmBuildLegacyDevNameString (
+@@ -8,9 +8,10 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ 
+ **/
+ 
+-#include "InternalLegacyBm.h"
+-
+-#define  LEGACY_BM_BOOT_DESCRIPTION_LENGTH  32
++#include "InternalLegacyBm.h"
++
++#define  LEGACY_BM_BOOT_DESCRIPTION_LENGTH  32
++#define  CSM_USB_BBS_SIGNATURE              SIGNATURE_32 ('E', 'U', 'S', 'B')
+ 
+ /**
+   Initialize legacy boot manager library by call EfiBootManagerRegisterLegacyBootSupport
+@@ -162,14 +163,21 @@ LegacyBmBuildLegacyDevNameString (
+     Type = L"BEVe";
+     break;
+ 
+-  case BBS_UNKNOWN:
+-  default:
+-    Type = L"Unknown";
+-    break;
+-  }
+-  //
+-  // If current BBS entry has its description then use it.
+-  //
++  case BBS_UNKNOWN:
++  default:
++    Type = L"Unknown";
++    break;
++  }
++
++  if ((CurBBSEntry->DeviceType == BBS_HARDDISK) &&
++      (CurBBSEntry->IBV1 == CSM_USB_BBS_SIGNATURE)) {
++    Type = L"USB Harddisk";
++    Fmt  = L"%s";
++  }
++
++  //
++  // If current BBS entry has its description then use it.
++  //
+   StringDesc = (CHAR8 *) (((UINTN) CurBBSEntry->DescStringSegment << 4) + CurBBSEntry->DescStringOffset);
+   if (NULL != StringDesc) {
+     //
+@@ -194,6 +202,76 @@ LegacyBmBuildLegacyDevNameString (
    }
  }
  
@@ -416,7 +509,7 @@ index 6138a32ad7..93ae8b0699 100644
  /**
    Get the Bbs index for the input boot option.
  
-@@ -213,30 +283,29 @@ LegacyBmFuzzyMatch (
+@@ -213,30 +291,29 @@ LegacyBmFuzzyMatch (
    )
  {
    UINT16                         Index;
@@ -456,7 +549,7 @@ index 6138a32ad7..93ae8b0699 100644
      }
    }
  
-@@ -400,11 +469,15 @@ LegacyBmDeleteAllInvalidBootOptions (
+@@ -400,11 +477,15 @@ LegacyBmDeleteAllInvalidBootOptions (
    LEGACY_DEV_ORDER_ENTRY        *LegacyDevOrder;
    UINTN                         LegacyDevOrderSize;
    BOOLEAN                       *BbsIndexUsed;
@@ -472,10 +565,10 @@ index 6138a32ad7..93ae8b0699 100644
  
    Status        = gBS->LocateProtocol (&gEfiLegacyBiosProtocolGuid, NULL, (VOID **) &LegacyBios);
    if (EFI_ERROR (Status)) {
-@@ -438,40 +511,47 @@ LegacyBmDeleteAllInvalidBootOptions (
-      continue;
-    }
-
+@@ -438,40 +519,47 @@ LegacyBmDeleteAllInvalidBootOptions (
+       continue;
+     }
+ 
 -    BbsIndex = LegacyBmFuzzyMatch (&BootOption[Index], BbsTable, BbsCount, BbsIndexUsed);
 -    if (BbsIndex == BbsCount) {
 -      DEBUG ((EFI_D_INFO, "[LegacyBds] Delete Boot Option Boot%04x: %s\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description));
@@ -537,20 +630,20 @@ index 6138a32ad7..93ae8b0699 100644
 +            BbsIndex
 +            );
 +        }
-
-        //
-        // Update the OptionalData in the Boot#### variable
-        //
+ 
+         //
+         // Update the OptionalData in the Boot#### variable
+         //
 -        ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex = BbsIndex;
 -        EfiBootManagerLoadOptionToVariable (&BootOption[Index]);
 +        Status = LegacyBmSetBootOptionBbsData (&BootOption[Index], &BbsTable[BbsIndex], BbsIndex);
 +        if (!EFI_ERROR (Status)) {
 +          EfiBootManagerLoadOptionToVariable (&BootOption[Index]);
 +        }
-      }
-    }
-  }
-@@ -519,7 +599,7 @@ LegacyBmCreateLegacyBootOption (
+       }
+     }
+   }
+@@ -519,7 +607,7 @@ LegacyBmCreateLegacyBootOption (
    CHAR16                       Description[LEGACY_BM_BOOT_DESCRIPTION_LENGTH + 1];
    CHAR8                        HelpString[LEGACY_BM_BOOT_DESCRIPTION_LENGTH + 1];
    UINTN                        StringLen;
@@ -559,7 +652,7 @@ index 6138a32ad7..93ae8b0699 100644
    BBS_BBS_DEVICE_PATH          *BbsNode;
  
    if ((BootOption == NULL) || (BbsEntry == NULL)) {
-@@ -549,9 +629,9 @@ LegacyBmCreateLegacyBootOption (
+@@ -549,9 +637,9 @@ LegacyBmCreateLegacyBootOption (
    //
    // Create the OptionalData
    //
@@ -572,7 +665,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    //
    // Create the BootOption
-@@ -563,11 +643,10 @@ LegacyBmCreateLegacyBootOption (
+@@ -563,11 +651,10 @@ LegacyBmCreateLegacyBootOption (
               LOAD_OPTION_ACTIVE,
               Description,
               DevicePath,
@@ -585,7 +678,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    return Status;
  }
-@@ -1225,7 +1304,10 @@ LegacyBmRefreshBbsTableForBoot (
+@@ -1225,7 +1312,10 @@ LegacyBmRefreshBbsTableForBoot (
      // If BootOption stands for a legacy boot option, we prioritize the devices with the same type first.
      //
      DevType  = LegacyBmDeviceType (BootOption->FilePath);
@@ -597,7 +690,7 @@ index 6138a32ad7..93ae8b0699 100644
      Status = LegacyBmSetPriorityForSameTypeDev (
                 DevType,
                 BbsIndex,
-@@ -1444,6 +1526,7 @@ LegacyBmRefreshAllBootOption (
+@@ -1444,6 +1534,7 @@ LegacyBmRefreshAllBootOption (
    UINTN                                      BootOptionCount;
    EFI_BOOT_MANAGER_LOAD_OPTION               *ExistingBootOptions;
    UINTN                                      ExistingBootOptionCount;
@@ -605,7 +698,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    Status = gBS->LocateProtocol (&gEfiLegacyBiosProtocolGuid, NULL, (VOID **) &LegacyBios);
    if (EFI_ERROR (Status)) {
-@@ -1505,10 +1588,14 @@ LegacyBmRefreshAllBootOption (
+@@ -1505,10 +1596,14 @@ LegacyBmRefreshAllBootOption (
    for (Index = 0; Index < BootOptionCount; Index++) {
      if (LegacyBmFindBootOption (&BootOptions[Index], ExistingBootOptions, ExistingBootOptionCount) == -1) {
        Status = EfiBootManagerAddLoadOptionVariable (&BootOptions[Index], (UINTN) -1);
@@ -665,3 +758,6 @@ index c00284c262..755d1206b7 100644
    Print (
      L"\n"
      L"F2      to enter Boot Manager Menu.\n"
+
+-- 
+2.43.0
