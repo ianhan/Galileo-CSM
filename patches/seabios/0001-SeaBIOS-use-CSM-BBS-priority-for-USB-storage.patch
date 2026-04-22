@@ -1,21 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Galileo CSM Workspace <galileo-csm@example.invalid>
 Date: Tue, 21 Apr 2026 17:45:00 -0600
-Subject: [PATCH] SeaBIOS: expose USB storage through CSM BBS
+Subject: [PATCH] SeaBIOS: use CSM BBS priority for USB storage
 
-In CSM mode, discover USB storage while handling Legacy16UpdateBbs,
-export the discovered SeaBIOS USB drives into the BBS table, and reapply
-BBS priorities to SeaBIOS boot entries during PrepareToBoot. This lets
-UEFI boot managers enumerate and select the same real USB disk that
-SeaBIOS will boot through INT 13h.
+In CSM mode, edk2 publishes USB mass-storage media as BBS hard-disk
+entries from its already-connected BlockIo handles. SeaBIOS must not run
+USB discovery from Legacy16UpdateBbs while edk2 owns the USB controller.
 
- boot.c       |   67 ++++++++++++++++++++-------
- fw/csm.c     |  146 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
- hw/usb-msc.c |    1 
- hw/usb-uas.c |    1 
- hw/usb.c     |    5 +-
- util.h       |    4 +
- 6 files changed, 202 insertions(+), 22 deletions(-)
+Track SeaBIOS USB drives during normal PrepareToBoot hardware discovery
+and reapply the selected CSM BBS priority to the matching INT 13h drive
+before the SeaBIOS boot menu and final boot ordering run.
 
 diff --git a/src/boot.c b/src/boot.c
 index 5c37dafd..fb4307ca 100644
@@ -120,7 +114,7 @@ index 5c37dafd..fb4307ca 100644
  /****************************************************************
   * Keyboard calls
 diff --git a/src/fw/csm.c b/src/fw/csm.c
-index 579debdc..ba0c3627 100644
+index 579debdc..61feac86 100644
 --- a/src/fw/csm.c
 +++ b/src/fw/csm.c
 @@ -9,8 +9,10 @@
@@ -130,7 +124,7 @@ index 579debdc..ba0c3627 100644
 +#include "hw/pci_ids.h" // PCI_CLASS_SERIAL_USB
  #include "hw/pcidevice.h" // pci_probe_devices
  #include "hw/pic.h" // pic_irqmask_read
-+#include "hw/usb.h" // usb_setup
++#include "hw/usb.h" // struct usbdevice_s
  #include "malloc.h" // malloc_csm_preinit
  #include "memmap.h" // SYMBOL
  #include "output.h" // dprintf
@@ -142,19 +136,16 @@ index 579debdc..ba0c3627 100644
  #include "util.h" // copy_smbios_21
  
  #define UINT8 u8
-@@ -43,6 +46,21 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
+@@ -43,6 +46,18 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
  
  static u16 PICMask = PIC_IRQMASK_DEFAULT;
  
-+#define CSM_MAX_BBS_ENTRIES 0x100
-+
-+char CsmUsbDriveDesc[] VARFSEG = "USB Mass Storage";
++#define CSM_USB_BBS_SIGNATURE 0x42535545u
 +
 +struct csm_usb_drive_s {
 +    struct drive_s *drive;
 +    struct pci_device *pci;
 +    int lun;
-+    int bbs_index;
 +    struct csm_usb_drive_s *next;
 +};
 +
@@ -164,7 +155,7 @@ index 579debdc..ba0c3627 100644
  extern void __csm_return(struct bregs *regs) __noreturn;
  
  static void
-@@ -59,6 +77,101 @@ csm_return(struct bregs *regs)
+@@ -59,6 +74,53 @@ csm_return(struct bregs *regs)
      __csm_return(regs);
  }
  
@@ -207,7 +198,6 @@ index 579debdc..ba0c3627 100644
 +    entry->drive = drive;
 +    entry->pci = usbdev->hub->cntl->pci;
 +    entry->lun = lun;
-+    entry->bbs_index = -1;
 +    *pprev = entry;
 +
 +    dprintf(3, "CSM registered USB drive %p on PCI %02x:%02x.%x lun %d\n",
@@ -216,69 +206,10 @@ index 579debdc..ba0c3627 100644
 +            lun);
 +}
 +
-+static void
-+csm_append_usb_drive_bbs(struct csm_usb_drive_s *drive)
-+{
-+    if (!csm_boot_table || !drive || !drive->pci)
-+        return;
-+
-+    u32 index = csm_boot_table->NumberBbsEntries;
-+    if (index >= CSM_MAX_BBS_ENTRIES) {
-+        dprintf(1, "No room left to add CSM USB BBS entry\n");
-+        drive->bbs_index = -1;
-+        return;
-+    }
-+
-+    BBS_TABLE *bbs = (void *)csm_boot_table->BbsTable;
-+    memset(&bbs[index], 0, sizeof(bbs[index]));
-+    bbs[index].BootPriority = BBS_UNPRIORITIZED_ENTRY;
-+    bbs[index].Bus = pci_bdf_to_bus(drive->pci->bdf);
-+    bbs[index].Device = pci_bdf_to_dev(drive->pci->bdf);
-+    bbs[index].Function = pci_bdf_to_fn(drive->pci->bdf);
-+    bbs[index].Class = PCI_CLASS_SERIAL_USB >> 8;
-+    bbs[index].SubClass = PCI_CLASS_SERIAL_USB & 0xff;
-+    bbs[index].DeviceType = BBS_HARDDISK;
-+    bbs[index].StatusFlags.MediaPresent = 2;
-+    bbs[index].MfgStringSegment = FLATPTR_TO_SEG((void*)CsmUsbDriveDesc);
-+    bbs[index].MfgStringOffset = FLATPTR_TO_OFFSET((void*)CsmUsbDriveDesc);
-+    bbs[index].DescStringSegment = FLATPTR_TO_SEG((void*)CsmUsbDriveDesc);
-+    bbs[index].DescStringOffset = FLATPTR_TO_OFFSET((void*)CsmUsbDriveDesc);
-+    bbs[index].AssignedDriveNumber = 0xff;
-+
-+    drive->bbs_index = index;
-+    csm_boot_table->NumberBbsEntries = index + 1;
-+    if (csm_boot_table->NumberBbsEntries < CSM_MAX_BBS_ENTRIES)
-+        bbs[csm_boot_table->NumberBbsEntries].BootPriority = BBS_IGNORE_ENTRY;
-+
-+    dprintf(3, "CSM added USB BBS entry %d for drive %p PCI %02x:%02x.%x\n",
-+            index, drive->drive, bbs[index].Bus, bbs[index].Device,
-+            bbs[index].Function);
-+}
-+
-+static void
-+csm_export_usb_drives(void)
-+{
-+    struct csm_usb_drive_s *pos;
-+    for (pos = CsmUsbDrives; pos; pos = pos->next)
-+        csm_append_usb_drive_bbs(pos);
-+}
-+
  static void
  csm_maininit(struct bregs *regs)
  {
-@@ -131,6 +244,11 @@ handle_csm_0001(struct bregs *regs)
-     dprintf(3, "OsMemoryAbove1Mb %08x\n", csm_boot_table->OsMemoryAbove1Mb);
-     dprintf(3, "UnconventionalDeviceTable %08x\n", csm_boot_table->UnconventionalDeviceTable);
- 
-+    csm_setup_basic();
-+    usb_setup();
-+    wait_threads();
-+    csm_export_usb_drives();
-+
-     regs->ax = 0;
- }
- 
-@@ -144,6 +262,7 @@ handle_csm_0002(struct bregs *regs)
+@@ -144,6 +206,7 @@ handle_csm_0002(struct bregs *regs)
      }
  
      dprintf(3, "PrepareToBoot table %04x:%04x\n", regs->es, regs->bx);
@@ -286,7 +217,7 @@ index 579debdc..ba0c3627 100644
  
      struct e820entry *p = (void *)csm_compat_table.E820Pointer;
      int i;
-@@ -184,12 +303,10 @@ handle_csm_0002(struct bregs *regs)
+@@ -184,12 +247,10 @@ handle_csm_0002(struct bregs *regs)
      struct bios_data_area_s *bda = MAKE_FLATPTR(SEG_BDA, 0);
      bda->hdcount = 0;
  
@@ -301,7 +232,7 @@ index 579debdc..ba0c3627 100644
      interactive_bootmenu();
  
      prepareboot();
-@@ -336,6 +453,27 @@ static int csm_prio_to_seabios(u16 csm_prio)
+@@ -336,6 +397,46 @@ static int csm_prio_to_seabios(u16 csm_prio)
      }
  }
  
@@ -312,15 +243,34 @@ index 579debdc..ba0c3627 100644
 +
 +    struct csm_usb_drive_s *pos;
 +    for (pos = CsmUsbDrives; pos; pos = pos->next) {
-+        if (pos->drive != drive || pos->bbs_index < 0)
++        if (pos->drive != drive)
 +            continue;
-+        if (pos->bbs_index >= csm_boot_table->NumberBbsEntries)
-+            return -1;
 +
 +        BBS_TABLE *bbs = (void *)csm_boot_table->BbsTable;
-+        dprintf(3, "CSM bootprio for USB drive %p (index %d) is %d\n",
-+                drive, pos->bbs_index, bbs[pos->bbs_index].BootPriority);
-+        return csm_prio_to_seabios(bbs[pos->bbs_index].BootPriority);
++        u16 bdf = pos->pci->bdf;
++        int fallback = -1;
++        int i;
++
++        for (i = 5; i < csm_boot_table->NumberBbsEntries; i++) {
++            if (bdf != pci_to_bdf(bbs[i].Bus, bbs[i].Device, bbs[i].Function)
++                || bbs[i].DeviceType != BBS_HARDDISK
++                || bbs[i].Class != (PCI_CLASS_SERIAL_USB >> 8)
++                || bbs[i].SubClass != (PCI_CLASS_SERIAL_USB & 0xff))
++                continue;
++
++            if (bbs[i].IBV1 == CSM_USB_BBS_SIGNATURE
++                && (bbs[i].IBV2 & 0xff) == pos->lun) {
++                dprintf(3, "CSM bootprio for USB drive %p lun %d "
++                        "(BBS %d) is %d\n", drive, pos->lun, i,
++                        bbs[i].BootPriority);
++                return csm_prio_to_seabios(bbs[i].BootPriority);
++            }
++
++            if (fallback < 0)
++                fallback = csm_prio_to_seabios(bbs[i].BootPriority);
++        }
++
++        return fallback;
 +    }
 +
 +    return -1;
@@ -386,6 +336,3 @@ index aff8e888..735f9282 100644
  int get_keystroke_full(int msec);
  int get_keystroke(int msec);
  struct chs_s;
-
--- 
-2.43.0

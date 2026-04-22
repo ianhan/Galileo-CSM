@@ -1,19 +1,234 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Galileo CSM Workspace <galileo-csm@example.invalid>
-Date: Tue, 21 Apr 2026 17:45:00 -0600
-Subject: [PATCH] QuarkPlatformPkg: enter boot manager and preserve CSM entries
+Date: Tue, 21 Apr 2026 17:40:00 -0600
+Subject: [PATCH] QuarkPlatformPkg: enter boot manager on boot
 
-Keep the Boot Manager visible at startup, store legacy boot options in
-the GenericBds/rEFInd-compatible BBS_TABLE plus BbsIndex format, and
-migrate older two-byte BbsIndex options in place instead of deleting them.
+Force the platform boot manager to enter the firmware UI so legacy CSM
+boot options are visible without an existing BootNext/BootOrder selection.
 
- IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c |   45 ++
- IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.h |    1 
- IntelFrameworkModulePkg/Library/LegacyBootManagerLib/InternalLegacyBm.h  |    1 
- IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c          |  186 ++++++++--
- QuarkPlatformPkg/Library/PlatformBootManagerLib/PlatformBootManager.c    |   26 +
- 5 files changed, 219 insertions(+), 40 deletions(-)
+Keep legacy Boot#### variables compatible with GenericBds and rEFInd by
+storing BBS_TABLE plus BbsIndex optional data. Existing two-byte
+BbsIndex-only options are accepted and migrated instead of deleted.
 
+Publish USB mass-storage devices that edk2 already connected as CSM BBS
+hard-disk entries. This bridges UEFI USB BlockIo media to legacy boot
+candidate discovery without running SeaBIOS USB discovery while the boot
+manager refreshes options.
+
+diff --git a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
+index 6b1dd344f3..b0acdbed2e 100644
+--- a/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
++++ b/IntelFrameworkModulePkg/Csm/LegacyBiosDxe/LegacyBbs.c
+@@ -18,10 +18,200 @@ SPDX-License-Identifier: BSD-2-Clause-Patent
+ #define FLOPPY_PRESENT_WITH_MEDIA    1
+ #define FLOPPY_PRESENT_NO_MEDIA      2
+ 
++#define CSM_USB_BBS_SIGNATURE  SIGNATURE_32 ('E', 'U', 'S', 'B')
++
+ BBS_TABLE           *mBbsTable;
+ BOOLEAN             mBbsTableDoneFlag   = FALSE;
+ BOOLEAN             IsHaveMediaInFloppy = TRUE;
+ 
++STATIC
++BOOLEAN
++LegacyBiosDevicePathIsUsb (
++  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
++  )
++{
++  while (!IsDevicePathEnd (DevicePath)) {
++    if ((DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) &&
++        (DevicePathSubType (DevicePath) == MSG_USB_DP)) {
++      return TRUE;
++    }
++
++    DevicePath = NextDevicePathNode (DevicePath);
++  }
++
++  return FALSE;
++}
++
++STATIC
++UINT8
++LegacyBiosUsbDevicePathLun (
++  IN EFI_DEVICE_PATH_PROTOCOL  *DevicePath
++  )
++{
++  while (!IsDevicePathEnd (DevicePath)) {
++    if ((DevicePathType (DevicePath) == MESSAGING_DEVICE_PATH) &&
++        (DevicePathSubType (DevicePath) == MSG_DEVICE_LOGICAL_UNIT_DP)) {
++      return ((DEVICE_LOGICAL_UNIT_DEVICE_PATH *) DevicePath)->Lun;
++    }
++
++    DevicePath = NextDevicePathNode (DevicePath);
++  }
++
++  return 0;
++}
++
++STATIC
++EFI_STATUS
++LegacyBiosGetPciLocationFromDevicePath (
++  IN  EFI_DEVICE_PATH_PROTOCOL  *DevicePath,
++  OUT UINTN                     *Segment,
++  OUT UINTN                     *Bus,
++  OUT UINTN                     *Device,
++  OUT UINTN                     *Function
++  )
++{
++  EFI_STATUS                Status;
++  EFI_HANDLE                PciHandle;
++  EFI_PCI_IO_PROTOCOL       *PciIo;
++  EFI_DEVICE_PATH_PROTOCOL  *PciDevicePath;
++  EFI_DEVICE_PATH_PROTOCOL  *RemainingDevicePath;
++
++  PciDevicePath = DuplicateDevicePath (DevicePath);
++  if (PciDevicePath == NULL) {
++    return EFI_OUT_OF_RESOURCES;
++  }
++
++  RemainingDevicePath = PciDevicePath;
++  Status = gBS->LocateDevicePath (
++                  &gEfiPciIoProtocolGuid,
++                  &RemainingDevicePath,
++                  &PciHandle
++                  );
++  if (!EFI_ERROR (Status)) {
++    Status = gBS->HandleProtocol (
++                    PciHandle,
++                    &gEfiPciIoProtocolGuid,
++                    (VOID **) &PciIo
++                    );
++  }
++
++  if (!EFI_ERROR (Status)) {
++    Status = PciIo->GetLocation (PciIo, Segment, Bus, Device, Function);
++  }
++
++  FreePool (PciDevicePath);
++  return Status;
++}
++
++STATIC
++VOID
++LegacyBiosAppendUsbMassStorageBbsEntries (
++  IN LEGACY_BIOS_INSTANCE  *Private
++  )
++{
++  EFI_STATUS                Status;
++  UINTN                     HandleCount;
++  EFI_HANDLE                *HandleBuffer;
++  UINTN                     HandleIndex;
++  EFI_BLOCK_IO_PROTOCOL     *BlockIo;
++  EFI_DEVICE_PATH_PROTOCOL  *DevicePath;
++  EFI_TO_COMPATIBILITY16_BOOT_TABLE *BootTable;
++  BBS_TABLE                 *BbsTable;
++  UINT32                    BbsIndex;
++  UINTN                     Segment;
++  UINTN                     Bus;
++  UINTN                     Device;
++  UINTN                     Function;
++
++  HandleBuffer = NULL;
++  Status = gBS->LocateHandleBuffer (
++                  ByProtocol,
++                  &gEfiBlockIoProtocolGuid,
++                  NULL,
++                  &HandleCount,
++                  &HandleBuffer
++                  );
++  if (EFI_ERROR (Status)) {
++    return;
++  }
++
++  BootTable = &Private->IntThunk->EfiToLegacy16BootTable;
++  BbsTable  = (BBS_TABLE *)(UINTN) BootTable->BbsTable;
++  BbsIndex  = BootTable->NumberBbsEntries;
++
++  for (HandleIndex = 0; HandleIndex < HandleCount; HandleIndex++) {
++    Status = gBS->HandleProtocol (
++                    HandleBuffer[HandleIndex],
++                    &gEfiBlockIoProtocolGuid,
++                    (VOID **) &BlockIo
++                    );
++    if (EFI_ERROR (Status) ||
++        (BlockIo->Media == NULL) ||
++        !BlockIo->Media->MediaPresent ||
++        BlockIo->Media->LogicalPartition) {
++      continue;
++    }
++
++    Status = gBS->HandleProtocol (
++                    HandleBuffer[HandleIndex],
++                    &gEfiDevicePathProtocolGuid,
++                    (VOID **) &DevicePath
++                    );
++    if (EFI_ERROR (Status) || !LegacyBiosDevicePathIsUsb (DevicePath)) {
++      continue;
++    }
++
++    Status = LegacyBiosGetPciLocationFromDevicePath (
++               DevicePath,
++               &Segment,
++               &Bus,
++               &Device,
++               &Function
++               );
++    if (EFI_ERROR (Status)) {
++      continue;
++    }
++
++    if (BbsIndex >= MAX_BBS_ENTRIES - 1) {
++      break;
++    }
++
++    ZeroMem (&BbsTable[BbsIndex], sizeof (BBS_TABLE));
++    BbsTable[BbsIndex].BootPriority             = BBS_UNPRIORITIZED_ENTRY;
++    BbsTable[BbsIndex].Bus                      = (UINT32) Bus;
++    BbsTable[BbsIndex].Device                   = (UINT32) Device;
++    BbsTable[BbsIndex].Function                 = (UINT32) Function;
++    BbsTable[BbsIndex].Class                    = PCI_CLASS_SERIAL;
++    BbsTable[BbsIndex].SubClass                 = PCI_CLASS_SERIAL_USB;
++    BbsTable[BbsIndex].DeviceType               = BBS_HARDDISK;
++    BbsTable[BbsIndex].StatusFlags.MediaPresent = 2;
++    BbsTable[BbsIndex].AssignedDriveNumber      = 0xff;
++    BbsTable[BbsIndex].IBV1                     = CSM_USB_BBS_SIGNATURE;
++    BbsTable[BbsIndex].IBV2                     = LegacyBiosUsbDevicePathLun (DevicePath);
++
++    DEBUG ((
++      EFI_D_INFO,
++      "LegacyBios: added USB BBS entry %u for %02x/%02x/%02x lun %u\n",
++      (UINTN) BbsIndex,
++      (UINTN) Bus,
++      (UINTN) Device,
++      (UINTN) Function,
++      (UINTN) BbsTable[BbsIndex].IBV2
++      ));
++
++    BbsIndex++;
++  }
++
++  BootTable->NumberBbsEntries = BbsIndex;
++  if (BbsIndex < MAX_BBS_ENTRIES) {
++    BbsTable[BbsIndex].BootPriority = BBS_IGNORE_ENTRY;
++  }
++
++  if (HandleBuffer != NULL) {
++    FreePool (HandleBuffer);
++  }
++}
++
+ /**
+   Checks the state of the floppy and if media is inserted.
+ 
+@@ -363,6 +553,8 @@ LegacyBiosGetBbsInfo (
+     if (Regs.X.AX != 0) {
+       return EFI_DEVICE_ERROR;
+     }
++
++    LegacyBiosAppendUsbMassStorageBbsEntries (Private);
+   }
+ 
+   if (HandleBuffer != NULL) {
 diff --git a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c b/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
 index af7d80eb5f..4df8983588 100644
 --- a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
@@ -486,6 +701,3 @@ index c00284c262..755d1206b7 100644
    Print (
      L"\n"
      L"F2      to enter Boot Manager Menu.\n"
-
--- 
-2.43.0
