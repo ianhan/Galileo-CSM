@@ -12,23 +12,10 @@ and reapply the selected CSM BBS priority to the matching INT 13h drive
 before the SeaBIOS boot menu and final boot ordering run.
 
 diff --git a/src/boot.c b/src/boot.c
-index 5c37dafd..fb4307ca 100644
+index 5c37dafd..29202a21 100644
 --- a/src/boot.c
 +++ b/src/boot.c
-@@ -421,6 +421,12 @@ build_usb_path(char *buf, int max, struct usbhub_s *hub)
- 
- int bootprio_find_usb(struct usbdevice_s *usbdev, int lun)
- {
-+    if (CONFIG_CSM && usbdev->hub->cntl->pci) {
-+        int prio = csm_bootprio_pci(usbdev->hub->cntl->pci);
-+        if (prio >= 0)
-+            return prio;
-+    }
-+
-     if (!CONFIG_BOOTORDER)
-         return -1;
-     // Find usb - examples:
-@@ -522,26 +528,11 @@ static struct hlist_head BootList VARVERIFY32INIT;
+@@ -522,26 +522,11 @@ static struct hlist_head BootList VARVERIFY32INIT;
  #define IPL_TYPE_HALT        0xf0
  
  static void
@@ -57,7 +44,7 @@ index 5c37dafd..fb4307ca 100644
          if (be->priority < pos->priority)
              break;
          if (be->priority > pos->priority)
-@@ -559,6 +550,27 @@ bootentry_add(int type, int prio, u32 data, const char *desc)
+@@ -559,6 +544,27 @@ bootentry_add(int type, int prio, u32 data, const char *desc)
      hlist_add(&be->node, pprev);
  }
  
@@ -85,7 +72,7 @@ index 5c37dafd..fb4307ca 100644
  // Return the given priority if it's set - defaultprio otherwise.
  static inline int defPrio(int priority, int defaultprio) {
      return (priority < 0) ? defaultprio : priority;
-@@ -621,6 +633,27 @@ boot_add_cbfs(void *data, const char *desc, int prio)
+@@ -621,6 +627,27 @@ boot_add_cbfs(void *data, const char *desc, int prio)
      bootentry_add(IPL_TYPE_CBFS, defPrio(prio, DEFAULT_PRIO), (u32)data, desc);
  }
  
@@ -114,7 +101,7 @@ index 5c37dafd..fb4307ca 100644
  /****************************************************************
   * Keyboard calls
 diff --git a/src/fw/csm.c b/src/fw/csm.c
-index 579debdc..61feac86 100644
+index 579debdc..60484748 100644
 --- a/src/fw/csm.c
 +++ b/src/fw/csm.c
 @@ -9,8 +9,10 @@
@@ -136,7 +123,7 @@ index 579debdc..61feac86 100644
  #include "util.h" // copy_smbios_21
  
  #define UINT8 u8
-@@ -43,6 +46,18 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
+@@ -43,6 +46,17 @@ EFI_TO_COMPATIBILITY16_BOOT_TABLE *csm_boot_table;
  
  static u16 PICMask = PIC_IRQMASK_DEFAULT;
  
@@ -150,28 +137,14 @@ index 579debdc..61feac86 100644
 +};
 +
 +static struct csm_usb_drive_s *CsmUsbDrives;
-+static int CsmBasicSetupDone;
 +
  extern void __csm_return(struct bregs *regs) __noreturn;
  
  static void
-@@ -59,6 +74,53 @@ csm_return(struct bregs *regs)
+@@ -59,6 +73,40 @@ csm_return(struct bregs *regs)
      __csm_return(regs);
  }
  
-+static void
-+csm_setup_basic(void)
-+{
-+    if (CsmBasicSetupDone)
-+        return;
-+    CsmBasicSetupDone = 1;
-+
-+    thread_setup();
-+    mathcp_setup();
-+    timer_setup();
-+    clock_setup();
-+}
-+
 +void
 +csm_register_usb_drive(struct usbdevice_s *usbdev, int lun, struct drive_s *drive)
 +{
@@ -209,7 +182,7 @@ index 579debdc..61feac86 100644
  static void
  csm_maininit(struct bregs *regs)
  {
-@@ -144,6 +206,7 @@ handle_csm_0002(struct bregs *regs)
+@@ -144,6 +192,7 @@ handle_csm_0002(struct bregs *regs)
      }
  
      dprintf(3, "PrepareToBoot table %04x:%04x\n", regs->es, regs->bx);
@@ -217,22 +190,15 @@ index 579debdc..61feac86 100644
  
      struct e820entry *p = (void *)csm_compat_table.E820Pointer;
      int i;
-@@ -184,12 +247,10 @@ handle_csm_0002(struct bregs *regs)
-     struct bios_data_area_s *bda = MAKE_FLATPTR(SEG_BDA, 0);
-     bda->hdcount = 0;
- 
--    thread_setup();
--    mathcp_setup();
--    timer_setup();
--    clock_setup();
-+    csm_setup_basic();
+@@ -190,6 +239,7 @@ handle_csm_0002(struct bregs *regs)
+     clock_setup();
      device_hardware_setup();
      wait_threads();
 +    boot_update_csm_priorities();
      interactive_bootmenu();
  
      prepareboot();
-@@ -336,6 +397,46 @@ static int csm_prio_to_seabios(u16 csm_prio)
+@@ -336,6 +386,42 @@ static int csm_prio_to_seabios(u16 csm_prio)
      }
  }
  
@@ -248,7 +214,6 @@ index 579debdc..61feac86 100644
 +
 +        BBS_TABLE *bbs = (void *)csm_boot_table->BbsTable;
 +        u16 bdf = pos->pci->bdf;
-+        int fallback = -1;
 +        int i;
 +
 +        for (i = 5; i < csm_boot_table->NumberBbsEntries; i++) {
@@ -265,12 +230,9 @@ index 579debdc..61feac86 100644
 +                        bbs[i].BootPriority);
 +                return csm_prio_to_seabios(bbs[i].BootPriority);
 +            }
-+
-+            if (fallback < 0)
-+                fallback = csm_prio_to_seabios(bbs[i].BootPriority);
 +        }
 +
-+        return fallback;
++        return -1;
 +    }
 +
 +    return -1;
@@ -303,24 +265,6 @@ index 6a8decc0..3cc86880 100644
      return 0;
  }
  
-diff --git a/src/hw/usb.c b/src/hw/usb.c
-index 409da8c5..3f76396d 100644
---- a/src/hw/usb.c
-+++ b/src/hw/usb.c
-@@ -500,9 +500,12 @@ usb_enumerate(struct usbhub_s *hub)
- void
- usb_setup(void)
- {
-+    static int SetupDone;
-+
-     ASSERT32FLAT();
--    if (! CONFIG_USB)
-+    if (! CONFIG_USB || SetupDone)
-         return;
-+    SetupDone = 1;
-     dprintf(3, "init usb\n");
-     usb_time_sigatt = romfile_loadint("etc/usb-time-sigatt", USB_TIME_SIGATT);
-     xhci_setup();
 diff --git a/src/util.h b/src/util.h
 index aff8e888..735f9282 100644
 --- a/src/util.h

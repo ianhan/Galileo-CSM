@@ -7,8 +7,7 @@ Force the platform boot manager to enter the firmware UI so legacy CSM
 boot options are visible without an existing BootNext/BootOrder selection.
 
 Keep legacy Boot#### variables compatible with GenericBds and rEFInd by
-storing BBS_TABLE plus BbsIndex optional data. Existing two-byte
-BbsIndex-only options are accepted and migrated instead of deleted.
+storing BBS_TABLE plus BbsIndex optional data.
 
 Publish USB mass-storage devices that edk2 already connected as CSM BBS
 hard-disk entries. This bridges UEFI USB BlockIo media to legacy boot
@@ -233,7 +232,7 @@ diff --git a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMain
 index af7d80eb5f..4df8983588 100644
 --- a/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
 +++ b/IntelFrameworkModulePkg/Library/LegacyBootMaintUiLib/LegacyBootMaintUi.c
-@@ -16,6 +16,31 @@ CHAR16    mLegacyBootStorageName[]  = L"LegacyBootData";
+@@ -16,6 +16,26 @@ CHAR16    mLegacyBootStorageName[]  = L"LegacyBootData";
  BBS_TYPE  mBbsType[] = {BBS_FLOPPY, BBS_HARDDISK, BBS_CDROM, BBS_EMBED_NETWORK, BBS_BEV_DEVICE, BBS_UNKNOWN};
  BOOLEAN   mFirstEnterLegacyForm = FALSE;
  
@@ -249,23 +248,18 @@ index af7d80eb5f..4df8983588 100644
 +    return FALSE;
 +  }
 +
-+  if (OptionalDataSize == sizeof (UINT16)) {
-+    *BbsIndex = *(UINT16 *) OptionalData;
-+    return TRUE;
++  if (OptionalDataSize != sizeof (LEGACY_BOOT_OPTION_BBS_DATA)) {
++    return FALSE;
 +  }
 +
-+  if (OptionalDataSize >= sizeof (LEGACY_BOOT_OPTION_BBS_DATA)) {
-+    *BbsIndex = ((LEGACY_BOOT_OPTION_BBS_DATA *) OptionalData)->BbsIndex;
-+    return TRUE;
-+  }
-+
-+  return FALSE;
++  *BbsIndex = ((LEGACY_BOOT_OPTION_BBS_DATA *) OptionalData)->BbsIndex;
++  return TRUE;
 +}
 +
  
  ///
  /// Legacy FD Info from LegacyBios.GetBbsInfo()
-@@ -151,6 +176,7 @@ OrderLegacyBootOption4SameType (
+@@ -151,6 +171,7 @@ OrderLegacyBootOption4SameType (
    CHAR16                           OptionName[sizeof ("Boot####")];
    UINT16                   *BbsIndexArray;
    UINT16                   *DeviceTypeArray;
@@ -273,7 +267,7 @@ index af7d80eb5f..4df8983588 100644
  
    GetEfiGlobalVariable2 (L"BootOrder", (VOID **) &BootOrder, &BootOrderSize);
    ASSERT (BootOrder != NULL);
-@@ -180,10 +206,13 @@ OrderLegacyBootOption4SameType (
+@@ -180,10 +201,13 @@ OrderLegacyBootOption4SameType (
        //
        // Legacy Boot Option
        //
@@ -291,7 +285,7 @@ index af7d80eb5f..4df8983588 100644
      } else {
        DeviceTypeArray[Index] = BBS_TYPE_UNKNOWN;
        BbsIndexArray  [Index] = 0xFFFF;
-@@ -1314,6 +1343,7 @@ GetLegacyOptions (
+@@ -1314,6 +1338,7 @@ GetLegacyOptions (
    UINTN                         CDNum;
    UINTN                         NETNum;
    UINTN                         BEVNum;
@@ -299,7 +293,7 @@ index af7d80eb5f..4df8983588 100644
  
    //
    // Initialize Bbs Table Context from BBS info data
-@@ -1346,12 +1376,15 @@ GetLegacyOptions (
+@@ -1346,12 +1371,15 @@ GetLegacyOptions (
         ) {
        continue;
      }
@@ -345,7 +339,7 @@ diff --git a/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c b/I
 index 6138a32ad7..93ae8b0699 100644
 --- a/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c
 +++ b/IntelFrameworkModulePkg/Library/LegacyBootManagerLib/LegacyBm.c
-@@ -194,6 +194,83 @@ LegacyBmBuildLegacyDevNameString (
+@@ -194,6 +194,76 @@ LegacyBmBuildLegacyDevNameString (
    }
  }
  
@@ -353,8 +347,6 @@ index 6138a32ad7..93ae8b0699 100644
 +  Read the BBS index from legacy boot option optional data.
 +
 +  The GenericBds/rEFInd format stores a BBS_TABLE followed by the UINT16 index.
-+  Older local options stored only the UINT16 index; accept both so existing
-+  variables are migrated instead of being deleted.
 +**/
 +STATIC
 +BOOLEAN
@@ -368,17 +360,12 @@ index 6138a32ad7..93ae8b0699 100644
 +    return FALSE;
 +  }
 +
-+  if (OptionalDataSize == sizeof (UINT16)) {
-+    *BbsIndex = *(UINT16 *) OptionalData;
-+    return TRUE;
++  if (OptionalDataSize != sizeof (LEGACY_BM_BOOT_OPTION_BBS_DATA)) {
++    return FALSE;
 +  }
 +
-+  if (OptionalDataSize >= sizeof (LEGACY_BM_BOOT_OPTION_BBS_DATA)) {
-+    *BbsIndex = ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) OptionalData)->BbsIndex;
-+    return TRUE;
-+  }
-+
-+  return FALSE;
++  *BbsIndex = ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) OptionalData)->BbsIndex;
++  return TRUE;
 +}
 +
 +STATIC
@@ -429,7 +416,7 @@ index 6138a32ad7..93ae8b0699 100644
  /**
    Get the Bbs index for the input boot option.
  
-@@ -213,30 +290,29 @@ LegacyBmFuzzyMatch (
+@@ -213,30 +283,29 @@ LegacyBmFuzzyMatch (
    )
  {
    UINT16                         Index;
@@ -469,12 +456,12 @@ index 6138a32ad7..93ae8b0699 100644
      }
    }
  
-@@ -400,11 +476,15 @@ LegacyBmDeleteAllInvalidBootOptions (
+@@ -400,11 +469,15 @@ LegacyBmDeleteAllInvalidBootOptions (
    LEGACY_DEV_ORDER_ENTRY        *LegacyDevOrder;
    UINTN                         LegacyDevOrderSize;
    BOOLEAN                       *BbsIndexUsed;
-+  UINT16                        OldBbsIndex;
-+  BOOLEAN                       HasOldBbsIndex;
++  UINT16                        OptionBbsIndex;
++  BOOLEAN                       HasBbsIndex;
  
    HddCount      = 0;
    BbsCount      = 0;
@@ -485,41 +472,31 @@ index 6138a32ad7..93ae8b0699 100644
  
    Status        = gBS->LocateProtocol (&gEfiLegacyBiosProtocolGuid, NULL, (VOID **) &LegacyBios);
    if (EFI_ERROR (Status)) {
-@@ -438,8 +518,14 @@ LegacyBmDeleteAllInvalidBootOptions (
-       continue;
-     }
- 
-+    HasOldBbsIndex = LegacyBmGetBootOptionBbsIndex (&BootOption[Index], &OldBbsIndex);
-     BbsIndex = LegacyBmFuzzyMatch (&BootOption[Index], BbsTable, BbsCount, BbsIndexUsed);
-     if (BbsIndex == BbsCount) {
-+      if (!HasOldBbsIndex) {
-+        DEBUG ((EFI_D_INFO, "[LegacyBds] Keep Boot Option Boot%04x with unrecognized legacy optional data: %s\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description));
-+        continue;
-+      }
-+
-       DEBUG ((EFI_D_INFO, "[LegacyBds] Delete Boot Option Boot%04x: %s\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description));
-       //
-       // Delete entry from LegacyDevOrder
-@@ -448,30 +534,36 @@ LegacyBmDeleteAllInvalidBootOptions (
-         LegacyDevOrder,
-         &LegacyDevOrderSize,
-         LegacyBmDeviceType (BootOption[Index].FilePath),
+@@ -438,40 +511,47 @@ LegacyBmDeleteAllInvalidBootOptions (
+      continue;
+    }
+
+-    BbsIndex = LegacyBmFuzzyMatch (&BootOption[Index], BbsTable, BbsCount, BbsIndexUsed);
+-    if (BbsIndex == BbsCount) {
+-      DEBUG ((EFI_D_INFO, "[LegacyBds] Delete Boot Option Boot%04x: %s\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description));
+-      //
+-      // Delete entry from LegacyDevOrder
+-      //
+-      LegacyBmUpdateBbsIndex (
+-        LegacyDevOrder,
+-        &LegacyDevOrderSize,
+-        LegacyBmDeviceType (BootOption[Index].FilePath),
 -        ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex,
-+        OldBbsIndex,
-         (UINT16) -1
-         );
-       EfiBootManagerDeleteLoadOptionVariable (BootOption[Index].OptionNumber, BootOption[Index].OptionType);
-     } else {
+-        (UINT16) -1
+-        );
+-      EfiBootManagerDeleteLoadOptionVariable (BootOption[Index].OptionNumber, BootOption[Index].OptionType);
+-    } else {
 -      if (((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex != BbsIndex) {
-+      if (!HasOldBbsIndex ||
-+          (OldBbsIndex != BbsIndex) ||
-+          (BootOption[Index].OptionalDataSize != sizeof (LEGACY_BM_BOOT_OPTION_BBS_DATA))) {
-         DEBUG ((EFI_D_INFO, "[LegacyBds] Update Boot Option Boot%04x: %s Bbs0x%04x->Bbs0x%04x\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description,
+-        DEBUG ((EFI_D_INFO, "[LegacyBds] Update Boot Option Boot%04x: %s Bbs0x%04x->Bbs0x%04x\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description,
 -                (UINTN) ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex, (UINTN) BbsIndex));
-+                HasOldBbsIndex ? (UINTN) OldBbsIndex : (UINTN) -1, (UINTN) BbsIndex));
-         //
-         // Update the BBS index in LegacyDevOrder
-         //
+-        //
+-        // Update the BBS index in LegacyDevOrder
+-        //
 -        LegacyBmUpdateBbsIndex (
 -          LegacyDevOrder,
 -          &LegacyDevOrderSize,
@@ -527,29 +504,53 @@ index 6138a32ad7..93ae8b0699 100644
 -          ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex,
 -          BbsIndex
 -          );
-+        if (HasOldBbsIndex && (OldBbsIndex != BbsIndex)) {
++    HasBbsIndex = LegacyBmGetBootOptionBbsIndex (&BootOption[Index], &OptionBbsIndex);
++    BbsIndex = LegacyBmFuzzyMatch (&BootOption[Index], BbsTable, BbsCount, BbsIndexUsed);
++    if (BbsIndex == BbsCount) {
++      DEBUG ((EFI_D_INFO, "[LegacyBds] Delete Boot Option Boot%04x: %s\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description));
++      //
++      // Delete entry from LegacyDevOrder
++      //
++      if (HasBbsIndex) {
++        LegacyBmUpdateBbsIndex (
++          LegacyDevOrder,
++          &LegacyDevOrderSize,
++          LegacyBmDeviceType (BootOption[Index].FilePath),
++          OptionBbsIndex,
++          (UINT16) -1
++          );
++      }
++      EfiBootManagerDeleteLoadOptionVariable (BootOption[Index].OptionNumber, BootOption[Index].OptionType);
++    } else {
++      if (!HasBbsIndex || (OptionBbsIndex != BbsIndex)) {
++        DEBUG ((EFI_D_INFO, "[LegacyBds] Update Boot Option Boot%04x: %s Bbs0x%04x->Bbs0x%04x\n", (UINTN) BootOption[Index].OptionNumber, BootOption[Index].Description,
++                HasBbsIndex ? (UINTN) OptionBbsIndex : (UINTN) -1, (UINTN) BbsIndex));
++        //
++        // Update the BBS index in LegacyDevOrder
++        //
++        if (HasBbsIndex && (OptionBbsIndex != BbsIndex)) {
 +          LegacyBmUpdateBbsIndex (
 +            LegacyDevOrder,
 +            &LegacyDevOrderSize,
 +            LegacyBmDeviceType (BootOption[Index].FilePath),
-+            OldBbsIndex,
++            OptionBbsIndex,
 +            BbsIndex
 +            );
 +        }
- 
-         //
-         // Update the OptionalData in the Boot#### variable
-         //
+
+        //
+        // Update the OptionalData in the Boot#### variable
+        //
 -        ((LEGACY_BM_BOOT_OPTION_BBS_DATA *) BootOption[Index].OptionalData)->BbsIndex = BbsIndex;
 -        EfiBootManagerLoadOptionToVariable (&BootOption[Index]);
 +        Status = LegacyBmSetBootOptionBbsData (&BootOption[Index], &BbsTable[BbsIndex], BbsIndex);
 +        if (!EFI_ERROR (Status)) {
 +          EfiBootManagerLoadOptionToVariable (&BootOption[Index]);
 +        }
-       }
-     }
-   }
-@@ -519,7 +611,7 @@ LegacyBmCreateLegacyBootOption (
+      }
+    }
+  }
+@@ -519,7 +599,7 @@ LegacyBmCreateLegacyBootOption (
    CHAR16                       Description[LEGACY_BM_BOOT_DESCRIPTION_LENGTH + 1];
    CHAR8                        HelpString[LEGACY_BM_BOOT_DESCRIPTION_LENGTH + 1];
    UINTN                        StringLen;
@@ -558,7 +559,7 @@ index 6138a32ad7..93ae8b0699 100644
    BBS_BBS_DEVICE_PATH          *BbsNode;
  
    if ((BootOption == NULL) || (BbsEntry == NULL)) {
-@@ -549,9 +641,9 @@ LegacyBmCreateLegacyBootOption (
+@@ -549,9 +629,9 @@ LegacyBmCreateLegacyBootOption (
    //
    // Create the OptionalData
    //
@@ -571,7 +572,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    //
    // Create the BootOption
-@@ -563,11 +655,10 @@ LegacyBmCreateLegacyBootOption (
+@@ -563,11 +643,10 @@ LegacyBmCreateLegacyBootOption (
               LOAD_OPTION_ACTIVE,
               Description,
               DevicePath,
@@ -584,7 +585,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    return Status;
  }
-@@ -1225,7 +1316,10 @@ LegacyBmRefreshBbsTableForBoot (
+@@ -1225,7 +1304,10 @@ LegacyBmRefreshBbsTableForBoot (
      // If BootOption stands for a legacy boot option, we prioritize the devices with the same type first.
      //
      DevType  = LegacyBmDeviceType (BootOption->FilePath);
@@ -596,44 +597,7 @@ index 6138a32ad7..93ae8b0699 100644
      Status = LegacyBmSetPriorityForSameTypeDev (
                 DevType,
                 BbsIndex,
-@@ -1408,13 +1502,32 @@ LegacyBmFindBootOption (
-   )
- {
-   UINTN                             Index;
-+  UINT16                            KeyBbsIndex;
-+  UINT16                            ArrayBbsIndex;
-+  BOOLEAN                           KeyHasBbsIndex;
-+  BOOLEAN                           ArrayHasBbsIndex;
- 
-   for (Index = 0; Index < Count; Index++) {
-     if ((StrCmp (Key->Description, Array[Index].Description) == 0) &&
--        (CompareMem (Key->FilePath, Array[Index].FilePath, GetDevicePathSize (Key->FilePath)) == 0) &&
--        (Key->OptionalDataSize == Array[Index].OptionalDataSize) &&
--        (CompareMem (Key->OptionalData, Array[Index].OptionalData, Key->OptionalDataSize) == 0)) {
--      return (INTN) Index;
-+        (CompareMem (Key->FilePath, Array[Index].FilePath, GetDevicePathSize (Key->FilePath)) == 0)) {
-+      if ((Key->OptionalDataSize == Array[Index].OptionalDataSize) &&
-+          (CompareMem (Key->OptionalData, Array[Index].OptionalData, Key->OptionalDataSize) == 0)) {
-+        return (INTN) Index;
-+      }
-+
-+      KeyHasBbsIndex = LegacyBmGetBbsIndexFromOptionalData (
-+                         Key->OptionalData,
-+                         Key->OptionalDataSize,
-+                         &KeyBbsIndex
-+                         );
-+      ArrayHasBbsIndex = LegacyBmGetBbsIndexFromOptionalData (
-+                           Array[Index].OptionalData,
-+                           Array[Index].OptionalDataSize,
-+                           &ArrayBbsIndex
-+                           );
-+      if (KeyHasBbsIndex && ArrayHasBbsIndex && (KeyBbsIndex == ArrayBbsIndex)) {
-+        return (INTN) Index;
-+      }
-     }
-   }
- 
-@@ -1444,6 +1557,7 @@ LegacyBmRefreshAllBootOption (
+@@ -1444,6 +1526,7 @@ LegacyBmRefreshAllBootOption (
    UINTN                                      BootOptionCount;
    EFI_BOOT_MANAGER_LOAD_OPTION               *ExistingBootOptions;
    UINTN                                      ExistingBootOptionCount;
@@ -641,7 +605,7 @@ index 6138a32ad7..93ae8b0699 100644
  
    Status = gBS->LocateProtocol (&gEfiLegacyBiosProtocolGuid, NULL, (VOID **) &LegacyBios);
    if (EFI_ERROR (Status)) {
-@@ -1505,10 +1619,14 @@ LegacyBmRefreshAllBootOption (
+@@ -1505,10 +1588,14 @@ LegacyBmRefreshAllBootOption (
    for (Index = 0; Index < BootOptionCount; Index++) {
      if (LegacyBmFindBootOption (&BootOptions[Index], ExistingBootOptions, ExistingBootOptionCount) == -1) {
        Status = EfiBootManagerAddLoadOptionVariable (&BootOptions[Index], (UINTN) -1);
